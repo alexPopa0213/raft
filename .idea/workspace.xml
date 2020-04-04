@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ChangeListManager">
-    <list default="true" id="9f4514ea-cff0-494f-93ef-133bdd598220" name="Default Changelist" comment="" />
+    <list default="true" id="9f4514ea-cff0-494f-93ef-133bdd598220" name="Default Changelist" comment="added .gitignore">
+      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -43,7 +46,14 @@
       </state>
     </system>
   </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+    <option name="UPDATE_TYPE" value="MERGE" />
+  </component>
   <component name="ProjectId" id="1a4pHAIGDR6V3HjPNOcJm3lerxU" />
+  <component name="ProjectLevelVcsManager" settingsEditedManually="true">
+    <ConfirmationsSetting value="2" id="Add" />
+  </component>
   <component name="ProjectViewState">
     <option name="autoscrollFromSource" value="true" />
     <option name="hideEmptyMiddlePackages" value="true" />
@@ -52,13 +62,14 @@
   </component>
   <component name="PropertiesComponent">
     <property name="RunOnceActivity.ShowReadmeOnStart" value="true" />
+    <property name="SHARE_PROJECT_CONFIGURATION_FILES" value="true" />
     <property name="WebServerToolWindowFactoryState" value="false" />
     <property name="aspect.path.notification.shown" value="true" />
     <property name="last_opened_file_path" value="$PROJECT_DIR$/src/main/proto" />
     <property name="project.structure.last.edited" value="Modules" />
     <property name="project.structure.proportion" value="0.15" />
     <property name="project.structure.side.proportion" value="0.2" />
-    <property name="settings.editor.selected.configurable" value="preferences.pluginManager" />
+    <property name="settings.editor.selected.configurable" value="project.propVCSSupport.ChangelistConflict" />
   </component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
@@ -141,7 +152,7 @@
     </recent_temporary>
   </component>
   <component name="SvnConfiguration">
-    <configuration />
+    <configuration>$USER_HOME$/.subversion</configuration>
   </component>
   <component name="TaskManager">
     <task active="true" id="Default" summary="Default task">
@@ -151,12 +162,35 @@
       <option name="presentableId" value="Default" />
       <updated>1586004629051</updated>
       <workItem from="1586004632303" duration="2253000" />
-      <workItem from="1586006994843" duration="1039000" />
+      <workItem from="1586006994843" duration="2088000" />
     </task>
+    <task id="LOCAL-00001" summary="added .gitignore">
+      <created>1586008828919</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1586008828919</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="1" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="added .gitignore" />
+    <option name="LAST_COMMIT_MESSAGE" value="added .gitignore" />
   </component>
   <component name="WindowStateProjectService">
     <state x="320" y="115" width="811" height="669" key="#Project_Structure" timestamp="1586007451122">
@@ -175,30 +209,46 @@
       <screen x="0" y="0" width="1440" height="900" />
     </state>
     <state x="371" y="382" key="#com.intellij.refactoring.move.MoveHandler.SelectRefactoringDialog/0.0.1440.900@0.0.1440.900" timestamp="1586006736656" />
+    <state x="303" y="52" key="CommitChangelistDialog2" timestamp="1586008828685">
+      <screen x="0" y="0" width="1440" height="900" />
+    </state>
+    <state x="303" y="52" key="CommitChangelistDialog2/0.0.1440.900@0.0.1440.900" timestamp="1586008828685" />
+    <state x="100" y="100" width="1240" height="700" key="DiffContextDialog" timestamp="1586009464113">
+      <screen x="0" y="0" width="1440" height="900" />
+    </state>
+    <state x="100" y="100" width="1240" height="700" key="DiffContextDialog/0.0.1440.900@0.0.1440.900" timestamp="1586009464113" />
     <state x="523" y="373" key="Github.CreateGistDialog" timestamp="1586007979000">
       <screen x="0" y="0" width="1440" height="900" />
     </state>
     <state x="523" y="373" key="Github.CreateGistDialog/0.0.1440.900@0.0.1440.900" timestamp="1586007979000" />
-    <state width="1398" height="245" key="GridCell.Tab.0.bottom" timestamp="1586007988759">
+    <state width="699" height="245" key="GridCell.Tab.0.bottom" timestamp="1586008509351">
       <screen x="0" y="0" width="1440" height="900" />
     </state>
-    <state width="1398" height="245" key="GridCell.Tab.0.bottom/0.0.1440.900@0.0.1440.900" timestamp="1586007988759" />
-    <state width="1398" height="245" key="GridCell.Tab.0.center" timestamp="1586007988758">
+    <state width="699" height="245" key="GridCell.Tab.0.bottom/0.0.1440.900@0.0.1440.900" timestamp="1586008509351" />
+    <state width="699" height="245" key="GridCell.Tab.0.center" timestamp="1586008509350">
       <screen x="0" y="0" width="1440" height="900" />
     </state>
-    <state width="1398" height="245" key="GridCell.Tab.0.center/0.0.1440.900@0.0.1440.900" timestamp="1586007988758" />
-    <state width="1398" height="245" key="GridCell.Tab.0.left" timestamp="1586007988757">
+    <state width="699" height="245" key="GridCell.Tab.0.center/0.0.1440.900@0.0.1440.900" timestamp="1586008509350" />
+    <state width="699" height="245" key="GridCell.Tab.0.left" timestamp="1586008509349">
       <screen x="0" y="0" width="1440" height="900" />
     </state>
-    <state width="1398" height="245" key="GridCell.Tab.0.left/0.0.1440.900@0.0.1440.900" timestamp="1586007988757" />
-    <state width="1398" height="245" key="GridCell.Tab.0.right" timestamp="1586007988758">
+    <state width="699" height="245" key="GridCell.Tab.0.left/0.0.1440.900@0.0.1440.900" timestamp="1586008509349" />
+    <state width="699" height="245" key="GridCell.Tab.0.right" timestamp="1586008509350">
       <screen x="0" y="0" width="1440" height="900" />
     </state>
-    <state width="1398" height="245" key="GridCell.Tab.0.right/0.0.1440.900@0.0.1440.900" timestamp="1586007988758" />
-    <state x="221" y="63" key="SettingsEditor" timestamp="1586006383694">
+    <state width="699" height="245" key="GridCell.Tab.0.right/0.0.1440.900@0.0.1440.900" timestamp="1586008509350" />
+    <state x="221" y="63" key="SettingsEditor" timestamp="1586009275351">
       <screen x="0" y="0" width="1440" height="900" />
     </state>
-    <state x="221" y="63" key="SettingsEditor/0.0.1440.900@0.0.1440.900" timestamp="1586006383694" />
+    <state x="221" y="63" key="SettingsEditor/0.0.1440.900@0.0.1440.900" timestamp="1586009275351" />
+    <state x="320" y="190" key="Vcs.Push.Dialog.v2" timestamp="1586008832290">
+      <screen x="0" y="0" width="1440" height="900" />
+    </state>
+    <state x="320" y="190" key="Vcs.Push.Dialog.v2/0.0.1440.900@0.0.1440.900" timestamp="1586008832290" />
+    <state x="503" y="374" key="com.intellij.openapi.vcs.update.UpdateOrStatusOptionsDialogupdate-v2" timestamp="1586008519603">
+      <screen x="0" y="0" width="1440" height="900" />
+    </state>
+    <state x="503" y="374" key="com.intellij.openapi.vcs.update.UpdateOrStatusOptionsDialogupdate-v2/0.0.1440.900@0.0.1440.900" timestamp="1586008519603" />
     <state x="385" y="196" key="search.everywhere.popup" timestamp="1586007668177">
       <screen x="0" y="0" width="1440" height="900" />
     </state>
