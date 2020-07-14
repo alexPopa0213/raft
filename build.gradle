@@ -26,6 +26,11 @@ dependencies {
     implementation "io.grpc:grpc-stub:${grpcVersion}"
     compileOnly "javax.annotation:javax.annotation-api:1.2"
 
+    compile group: 'org.mapdb', name: 'mapdb', version: '3.0.4'
+
+    compile group: 'org.apache.logging.log4j', name: 'log4j-api', version: '2.13.3'
+    compile group: 'org.apache.logging.log4j', name: 'log4j-core', version: '2.13.3'
+
     runtimeOnly "io.grpc:grpc-netty-shaded:${grpcVersion}"
 
     testImplementation "io.grpc:grpc-testing:${grpcVersion}"
@@ -54,22 +59,22 @@ sourceSets {
     }
 }
 
-task helloWorldServer(type: CreateStartScripts) {
-    mainClassName = 'com.alex.helloworld.HelloWorldServer'
-    applicationName = 'hello-world-server'
-    outputDir = new File(project.buildDir, 'tmp')
-    classpath = startScripts.classpath
-}
+//task helloWorldServer(type: CreateStartScripts) {
+//    mainClassName = 'com.alex.helloworld.HelloWorldServer'
+//    applicationName = 'hello-world-server'
+//    outputDir = new File(project.buildDir, 'tmp')
+//    classpath = startScripts.classpath
+//}
+//
+//task helloWorldClient(type: CreateStartScripts) {
+//    mainClassName = 'com.alex.helloworld.HelloWorldClient'
+//    applicationName = 'hello-world-client'
+//    outputDir = new File(project.buildDir, 'tmp')
+//    classpath = startScripts.classpath
+//}
 
-task helloWorldClient(type: CreateStartScripts) {
-    mainClassName = 'com.alex.helloworld.HelloWorldClient'
-    applicationName = 'hello-world-client'
-    outputDir = new File(project.buildDir, 'tmp')
-    classpath = startScripts.classpath
-}
-
-applicationDistribution.into('bin') {
-    from(helloWorldServer)
-    from(helloWorldClient)
-    fileMode = 0755
-}
+//applicationDistribution.into('bin') {
+//    from(helloWorldServer)
+//    from(helloWorldClient)
+//    fileMode = 0755
+//}
