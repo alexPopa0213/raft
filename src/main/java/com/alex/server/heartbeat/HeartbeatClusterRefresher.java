@@ -1,5 +1,6 @@
 package com.alex.server.heartbeat;
 
+import com.alex.raft.RaftServiceGrpc;
 import org.apache.logging.log4j.Logger;
 
 import java.sql.Timestamp;
@@ -16,9 +17,11 @@ public class HeartbeatClusterRefresher implements Runnable {
     private static final Logger LOGGER = getLogger(HeartbeatClusterRefresher.class);
 
     private final Map<Integer, Timestamp> cluster;
+    private final Map<Integer, RaftServiceGrpc.RaftServiceBlockingStub> stubs;
 
-    public HeartbeatClusterRefresher(Map<Integer, Timestamp> cluster) {
+    public HeartbeatClusterRefresher(Map<Integer, Timestamp> cluster, Map<Integer, RaftServiceGrpc.RaftServiceBlockingStub> stubs) {
         this.cluster = cluster;
+        this.stubs = stubs;
     }
 
     @Override
@@ -26,8 +29,14 @@ public class HeartbeatClusterRefresher implements Runnable {
         cluster.entrySet().removeIf(entry -> {
             Timestamp clusterTimestamp = entry.getValue();
             Timestamp currentTimestamp = new Timestamp(new Date().getTime());
-            return clusterTimestamp.getTime() < currentTimestamp.getTime() - TimeUnit.SECONDS.toMillis(5);
+            return clusterTimestamp.getTime() < currentTimestamp.getTime() - TimeUnit.SECONDS.toMillis(4);
         });
+        updateStubs();
         LOGGER.trace("Cluster is now: {}", cluster);
+        LOGGER.trace("Stubs are created for the following servers: {}", stubs.keySet());
+    }
+
+    private void updateStubs() {
+        stubs.entrySet().removeIf(entry -> !cluster.containsKey(entry.getKey()));
     }
 }
