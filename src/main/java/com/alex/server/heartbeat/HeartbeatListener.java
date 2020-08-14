@@ -26,21 +26,23 @@ public class HeartbeatListener implements Runnable {
     public HeartbeatListener(Map<Integer, Timestamp> cluster, int port) {
         this.cluster = cluster;
         this.port = port;
-        initSocket();
     }
 
     @Override
     public void run() {
-        try {
-            DatagramPacket packet = new DatagramPacket(buf, buf.length);
-            socket.receive(packet);
-            int receivedPort = parseInt(new String(packet.getData(), UTF_8).trim());
-            if (receivedPort != port) {
-                cluster.put(receivedPort, new Timestamp(new Date().getTime()));
+        while (true) {
+            try {
+                initSocket();
+                DatagramPacket packet = new DatagramPacket(buf, buf.length);
+                socket.receive(packet);
+                int receivedPort = parseInt(new String(packet.getData(), UTF_8).trim());
+                if (receivedPort != port) {
+                    cluster.put(receivedPort, new Timestamp(new Date().getTime()));
+                    LOGGER.trace("Server: {} joined", receivedPort);
+                }
+            } catch (IOException ex) {
+                LOGGER.error(ex.getMessage(), ex);
             }
-            // LOGGER.debug("Received: {}", receivedPort);
-        } catch (IOException ex) {
-            LOGGER.error(ex.getMessage(), ex);
         }
     }
 

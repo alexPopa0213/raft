@@ -39,14 +39,16 @@ import static org.apache.logging.log4j.LogManager.getLogger;
 public class RaftServer implements Identifiable {
     private static final Logger LOGGER = getLogger(RaftServer.class);
 
-    private volatile ServerState state;
+    private ServerState state;
 
     private final int port;
     private final String id;
     private Server server;
 
     private final Map<Integer, Timestamp> cluster = new ConcurrentHashMap<>();
-    private final Map<Integer, RaftServiceGrpc.RaftServiceBlockingStub> stubs = new ConcurrentHashMap<>();
+//    private final Map<Integer, RaftServiceGrpc.RaftServiceBlockingStub> stubs = new ConcurrentHashMap<>();
+
+    private final Map<Integer, ManagedChannel> managedChannelMap = new ConcurrentHashMap<>();
 
     private DB db;
 
@@ -100,7 +102,7 @@ public class RaftServer implements Identifiable {
 
     private void initDb(String id) {
         String dbName = "db_" + id;
-        db = DBMaker.fileDB(dbName).closeOnJvmShutdown().make();
+        db = DBMaker.fileDB(dbName).transactionEnable().closeOnJvmShutdown().make();
         log = db.indexTreeList(id + "_log", new LogEntrySerializer()).createOrOpen();
         votedFor = db.atomicString(id + "_votedFor").createOrOpen().get();
         currentTerm = db.atomicLong(id + "_current_term").createOrOpen().get();
@@ -119,13 +121,24 @@ public class RaftServer implements Identifiable {
                 .setPrevLogTerm(0L)
                 .addAllEntries(new ArrayList<>())
                 .build();
+        ManagedChannel managedChannel = null;
         try {
-            stubs.putIfAbsent(port, newBlockingStub(buildChannel(port)));
-            stubs.get(port).appendEntries(appendEntriesRequest);
+//            stubs.putIfAbsent(port, newBlockingStub(buildChannel(port)));
+//            stubs.get(port).appendEntries(appendEntriesRequest);
+            managedChannel = ManagedChannelBuilder.forAddress("localhost", port)
+                    .usePlaintext()
+                    .build();
+            managedChannelMap.putIfAbsent(port, managedChannel);
+            RaftServiceGrpc.RaftServiceBlockingStub blockingStub = newBlockingStub(managedChannel);
+            blockingStub.appendEntries(appendEntriesRequest);
         } catch (StatusRuntimeException sre) {
             LOGGER.warn("RPC failed: {}, {}", sre.getStatus(), sre.getMessage());
         } catch (Exception e) {
             LOGGER.error("ERROR append entries", e);
+        } finally {
+            if (nonNull(managedChannel) && !managedChannel.isShutdown()) {
+                managedChannel.shutdown();
+            }
         }
     }
 
@@ -144,12 +157,22 @@ public class RaftServer implements Identifiable {
                 .setLastLogTerm(lastLogIndex != -1 ? log.get(lastLogIndex).getTerm() : -1)
                 .build();
         RequestVoteReply requestVoteReply = null;
+        ManagedChannel managedChannel = null;
         try {
-            stubs.putIfAbsent(port, newBlockingStub(buildChannel(port)));
-            requestVoteReply = stubs.get(port).requestVote(requestVoteRequest);
+            managedChannel = ManagedChannelBuilder.forAddress("localhost", port)
+                    .usePlaintext()
+                    .build();
+            managedChannelMap.putIfAbsent(port, managedChannel);
+            RaftServiceGrpc.RaftServiceBlockingStub blockingStub = newBlockingStub(managedChannel);
+            requestVoteReply = blockingStub.requestVote(requestVoteRequest);
+            managedChannel.shutdown();
         } catch (StatusRuntimeException sre) {
             LOGGER.warn("RPC failed: {}, {}", sre.getStatus(), sre.getMessage());
             removeServerIfUnavailable(sre.getStatus(), port);
+        } finally {
+            if (nonNull(managedChannel) && !managedChannel.isShutdown()) {
+                managedChannel.shutdown();
+            }
         }
         return requestVoteReply;
     }
@@ -157,7 +180,7 @@ public class RaftServer implements Identifiable {
     private void removeServerIfUnavailable(Status status, Integer port) {
         if (status == UNAVAILABLE) { //maybe retry first?
             cluster.remove(port);
-            stubs.remove(port);
+//            stubs.remove(port);
         }
     }
 
@@ -173,6 +196,7 @@ public class RaftServer implements Identifiable {
         }
         LOGGER.info("Server {} started on port {}", id, port);
         enableHeartbeat();
+        preventElectionss();
         handleElections();
         addShutdownHook();
     }
@@ -183,10 +207,20 @@ public class RaftServer implements Identifiable {
         refreshCluster();
     }
 
-    private void listenHeartbeats() {
-//        new Thread(new HeartbeatListener(cluster, port)).start();
+    private void preventElectionss() {
+        Thread preventElectionsThread = new Thread(() -> {
+            while (state == LEADER) {
+                preventElections();
+            }
+        });
         ScheduledExecutorService executor = newScheduledThreadPool(1);
-        executor.scheduleAtFixedRate(new HeartbeatListener(cluster, port), 0, 100, MILLISECONDS);
+        executor.scheduleAtFixedRate(preventElectionsThread, 0, 200, MILLISECONDS);
+    }
+
+    private void listenHeartbeats() {
+        new Thread(new HeartbeatListener(cluster, port)).start();
+//        ScheduledExecutorService executor = newScheduledThreadPool(1);
+//        executor.scheduleAtFixedRate(new HeartbeatListener(cluster, port), 0, 100, MILLISECONDS);
     }
 
     private void sendHeartbeats() {
@@ -196,7 +230,7 @@ public class RaftServer implements Identifiable {
 
     private void refreshCluster() {
         ScheduledExecutorService executor = newScheduledThreadPool(1);
-        executor.scheduleAtFixedRate(new HeartbeatClusterRefresher(cluster, stubs), 0, 200, MILLISECONDS);
+        executor.scheduleAtFixedRate(new HeartbeatClusterRefresher(cluster), 0, 200, MILLISECONDS);
     }
 
     private void handleElections() {
@@ -204,11 +238,12 @@ public class RaftServer implements Identifiable {
         Runnable command = () -> {
             if ((state == FOLLOWER || state == CANDIDATE) && lastHeartBeatReceived + electionTimeOut < currentTimeMillis()) {
                 startElection();
-            } else if (state == LEADER) {
-                preventElections();
             }
+//            else if (state == LEADER) {
+//                preventElections();
+//            }
         };
-        executor.scheduleAtFixedRate(command, 0, 500, MILLISECONDS);
+        executor.scheduleAtFixedRate(command, 0, electionTimeOut, MILLISECONDS);
     }
 
     private void preventElections() {
@@ -232,7 +267,9 @@ public class RaftServer implements Identifiable {
                     receivedVotes++;
                     if (hasMajorityOfVotes()) {
                         LOGGER.debug("Server : {}, Switched to LEADER state.", id);
-                        state = LEADER;
+                        synchronized (this) {
+                            state = LEADER;
+                        }
                     }
                 }
             }
@@ -240,7 +277,9 @@ public class RaftServer implements Identifiable {
     }
 
     private void convertToCandidate() {
-        state = CANDIDATE;
+        synchronized (this) {
+            state = CANDIDATE;
+        }
     }
 
     private boolean hasMajorityOfVotes() {
@@ -249,7 +288,7 @@ public class RaftServer implements Identifiable {
 
     private void stop() throws InterruptedException {
         if (server != null) {
-            server.shutdown().awaitTermination(30, SECONDS);
+            server.shutdown().awaitTermination(5, SECONDS);
         }
     }
 
@@ -263,6 +302,7 @@ public class RaftServer implements Identifiable {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             err.println("*** shutting down gRPC server since JVM is shutting down");
             try {
+                managedChannelMap.forEach((integer, managedChannel) -> managedChannel.shutdown());
                 this.stop();
             } catch (InterruptedException e) {
                 e.printStackTrace(err);
