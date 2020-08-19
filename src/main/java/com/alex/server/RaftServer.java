@@ -28,7 +28,6 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static com.alex.raft.RaftServiceGrpc.newBlockingStub;
 import static com.alex.server.model.ServerState.*;
-import static io.grpc.Status.UNAVAILABLE;
 import static java.lang.Integer.parseInt;
 import static java.lang.System.currentTimeMillis;
 import static java.lang.System.err;
@@ -43,7 +42,7 @@ import static org.apache.logging.log4j.LogManager.getLogger;
 public class RaftServer implements Identifiable {
     private static final Logger LOGGER = getLogger(RaftServer.class);
 
-    private ServerState state;
+    private volatile ServerState state;
 
     private final int port;
     private final String id;
@@ -59,8 +58,8 @@ public class RaftServer implements Identifiable {
     /*
     state persisted to mapDB
      */
-    private Atomic.Long currentTerm;
-    private Atomic.String votedFor;
+    private volatile Atomic.Long currentTerm;
+    private volatile Atomic.String votedFor;
     private List<LogEntry> log;
 
     /*
@@ -77,8 +76,8 @@ public class RaftServer implements Identifiable {
     private Map<String, Integer> nextIndex;
     private Map<String, Integer> matchIndex;
 
-    private static final int ELECTION_TIMER_UPPER_BOUND = 1000;
-    private static final int ELECTION_TIMER_LOWER_BOUND = 350;
+    private static final int ELECTION_TIMER_UPPER_BOUND = 1500;
+    private static final int ELECTION_TIMER_LOWER_BOUND = 500;
     private final int electionTimeOut;
 
     private long lastHeartBeatReceived;
@@ -137,7 +136,11 @@ public class RaftServer implements Identifiable {
                     .build();
             managedChannelMap.putIfAbsent(port, managedChannel);
             RaftServiceGrpc.RaftServiceBlockingStub blockingStub = newBlockingStub(managedChannel);
-            blockingStub.appendEntries(appendEntriesRequest);
+            AppendEntriesReply appendEntriesReply = blockingStub.appendEntries(appendEntriesRequest);
+            if (!appendEntriesReply.getSuccess()) {
+                currentTerm.set(appendEntriesReply.getTerm());
+                convertTo(FOLLOWER);
+            }
         } catch (StatusRuntimeException sre) {
             LOGGER.warn("RPC failed: {}, {}", sre.getStatus(), sre.getMessage());
         } catch (Exception e) {
@@ -185,9 +188,8 @@ public class RaftServer implements Identifiable {
     }
 
     private void removeServerIfUnavailable(Status status, Integer port) {
-        if (status == UNAVAILABLE) { //maybe retry first?
+        if (status.getCode().equals(Status.Code.UNAVAILABLE)) { //maybe retry first?
             cluster.remove(port);
-//            stubs.remove(port);
         }
     }
 
@@ -216,12 +218,14 @@ public class RaftServer implements Identifiable {
 
     private void preventElections() {
         Thread preventElectionsThread = new Thread(() -> {
-            while (serverStateIs(LEADER)) {
+            if (serverStateIs(LEADER)) {
                 sendHeartbeatRPC();
             }
+//            LOGGER.debug("Prevent elections thread stopped!");
         });
+//        preventElectionsThread.start();
         ScheduledExecutorService executor = newScheduledThreadPool(1);
-        executor.scheduleAtFixedRate(preventElectionsThread, 0, 200, MILLISECONDS);
+        executor.scheduleAtFixedRate(preventElectionsThread, 0, 150, MILLISECONDS);
     }
 
     private void listenHeartbeats() {
@@ -276,10 +280,12 @@ public class RaftServer implements Identifiable {
                 RequestVoteReply requestVoteReply = requestVote(port);
                 if (nonNull(requestVoteReply)) {
                     if (requestVoteReply.getVoteGranted()) {
+                        LOGGER.debug("Received voted from: {}", port);
                         receivedVotes++;
                         if (hasMajorityOfVotes()) {
                             LOGGER.debug("Server : {}, Switched to LEADER state.", id);
                             convertTo(LEADER);
+//                            preventElections();
                         }
                     } else {
                         currentTerm.set(requestVoteReply.getTerm());
@@ -291,7 +297,9 @@ public class RaftServer implements Identifiable {
     }
 
     private boolean hasMajorityOfVotes() {
-        return receivedVotes + 1 >= parseInt(new DecimalFormat("#").format(((double) (cluster.size() + 1)) / 2));
+        int majority = parseInt(new DecimalFormat("#").format(((double) (cluster.size() + 1)) / 2));
+        LOGGER.debug("I received {} votes out of {}.", receivedVotes + 1, majority);
+        return receivedVotes + 1 >= majority;
     }
 
     private void stop() throws InterruptedException {
@@ -327,16 +335,16 @@ public class RaftServer implements Identifiable {
 //    }
 
     private boolean serverStateIs(ServerState... serverState) {
-        readWriteLock.readLock().lock();
+//        readWriteLock.readLock().lock();
         boolean result = stream(serverState).anyMatch(ss -> state == ss);
-        readWriteLock.readLock().unlock();
+//        readWriteLock.readLock().unlock();
         return result;
     }
 
     private void convertTo(ServerState serverState) {
-        readWriteLock.writeLock().lock();
+//        readWriteLock.writeLock().lock();
         state = serverState;
-        readWriteLock.writeLock().unlock();
+//        readWriteLock.writeLock().unlock();
     }
 
 //    private Long currentTerm() {
@@ -370,7 +378,7 @@ public class RaftServer implements Identifiable {
                 LOGGER.debug("Received and accepted heartbeat RPC from {}. Current state is: {}",
                         request.getLeaderId(), state.toString());
             }
-            builder.setSuccess(term <= request.getTerm());
+            builder.setSuccess(request.getTerm() >= term);
             builder.setTerm(term);
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
@@ -392,15 +400,17 @@ public class RaftServer implements Identifiable {
             if (request.getTerm() < term) {
                 builder.setVoteGranted(false);
                 builder.setTerm(term);
-                LOGGER.debug("Vote NOT granted to {}", request.getCandidateId());
-            } else if (isNull(votedFor.get())
-                    && request.getLastLogIndex() >= lastLogIndex
-                    && request.getLastLogTerm() >= lastLogTerm) {
+                LOGGER.debug("Vote NOT granted to {} because term was lower.", request.getCandidateId());
+            } else if (isNull(votedFor.get())) {
+//                if (request.getLastLogIndex() >= lastLogIndex
+//                        && request.getLastLogTerm() >= lastLogTerm) {
                 builder.setVoteGranted(true);
                 votedFor.set(request.getCandidateId());
                 LOGGER.debug("Vote granted to {}", request.getCandidateId());
+//                }
+            } else {
+                LOGGER.debug("Vote NOT granted to {} because I already voted for", votedFor.get());
             }
-//            builder.setVoteGranted(request.getCandidateId().equals("srv1"));
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
         }
