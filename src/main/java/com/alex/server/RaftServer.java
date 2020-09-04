@@ -76,11 +76,11 @@ public class RaftServer implements Identifiable {
     private Map<String, Integer> nextIndex;
     private Map<String, Integer> matchIndex;
 
-    private static final int ELECTION_TIMER_UPPER_BOUND = 1500;
-    private static final int ELECTION_TIMER_LOWER_BOUND = 500;
+    private static final int ELECTION_TIMER_UPPER_BOUND = 3500;
+    private static final int ELECTION_TIMER_LOWER_BOUND = 2000;
     private final int electionTimeOut;
 
-    private long lastHeartBeatReceived;
+    private volatile long lastHeartBeatReceived;
 
     ReadWriteLock readWriteLock = new ReentrantReadWriteLock();
 
@@ -138,7 +138,7 @@ public class RaftServer implements Identifiable {
             RaftServiceGrpc.RaftServiceBlockingStub blockingStub = newBlockingStub(managedChannel);
             AppendEntriesReply appendEntriesReply = blockingStub.appendEntries(appendEntriesRequest);
             if (!appendEntriesReply.getSuccess()) {
-                currentTerm.set(appendEntriesReply.getTerm());
+                updateTerm(appendEntriesReply.getTerm());
                 convertTo(FOLLOWER);
             }
         } catch (StatusRuntimeException sre) {
@@ -152,7 +152,7 @@ public class RaftServer implements Identifiable {
         }
     }
 
-    private ManagedChannel buildCshannel(Integer port) {
+    private ManagedChannel buildChannel(Integer port) {
         return ManagedChannelBuilder.forAddress("localhost", port)
                 .usePlaintext()
                 .build();
@@ -261,17 +261,19 @@ public class RaftServer implements Identifiable {
     }
 
     private void sendHeartbeatRPC() {
+        Long start = currentTimeMillis();
         cluster.keySet().parallelStream().forEach(port -> {
-            LOGGER.debug("Sending empty AppendEntriesRPC (to prevent election) to: {}", port);
+            LOGGER.trace("Sending empty AppendEntriesRPC (to prevent election) to: {}", port);
             sendEmptyAppendEntriesRPC(port);
         });
+        long end = currentTimeMillis();
+        LOGGER.debug("Sending HeartbeatRPC to all servers took: {} milliseconds.", end - start);
     }
 
     private void startElection() {
         LOGGER.debug("Started election.");
         convertTo(CANDIDATE);
-        currentTerm.set(currentTerm.get() + 1);
-        LOGGER.debug("Current term is: {}", currentTerm.get());
+        updateTerm(currentTerm.get() + 1);
         votedFor.set(null);
 
         cluster.keySet().parallelStream().forEach(port -> {
@@ -285,10 +287,11 @@ public class RaftServer implements Identifiable {
                         if (hasMajorityOfVotes()) {
                             LOGGER.debug("Server : {}, Switched to LEADER state.", id);
                             convertTo(LEADER);
+                            receivedVotes = 0;
 //                            preventElections();
                         }
                     } else {
-                        currentTerm.set(requestVoteReply.getTerm());
+                        updateTerm(requestVoteReply.getTerm());
                         convertTo(FOLLOWER);
                     }
                 }
@@ -343,8 +346,12 @@ public class RaftServer implements Identifiable {
 
     private void convertTo(ServerState serverState) {
 //        readWriteLock.writeLock().lock();
-        state = serverState;
 //        readWriteLock.writeLock().unlock();
+        if (serverState != state) {
+            LOGGER.debug("Old state is: {}.", state.toString());
+            state = serverState;
+            LOGGER.debug("Updated state is: {} and term is {}", state.toString(), currentTerm.get());
+        }
     }
 
 //    private Long currentTerm() {
@@ -374,7 +381,7 @@ public class RaftServer implements Identifiable {
             if (isHeartBeat(request) && request.getTerm() >= term) {
                 convertTo(FOLLOWER);
                 lastHeartBeatReceived = currentTimeMillis();
-                currentTerm.set(request.getTerm());
+                updateTerm(request.getTerm());
                 LOGGER.debug("Received and accepted heartbeat RPC from {}. Current state is: {}",
                         request.getLeaderId(), state.toString());
             }
@@ -397,10 +404,10 @@ public class RaftServer implements Identifiable {
             builder.setTerm(term);
             int lastLogIndex = log.size() - 1;
             long lastLogTerm = lastLogIndex != -1 ? log.get(lastLogIndex).getTerm() : -1;
-            if (request.getTerm() < term) {
+            if (request.getTerm() <= term) {
                 builder.setVoteGranted(false);
                 builder.setTerm(term);
-                LOGGER.debug("Vote NOT granted to {} because term was lower.", request.getCandidateId());
+                LOGGER.debug("Vote NOT granted to {} because term was lower (or not bigger).", request.getCandidateId());
             } else if (isNull(votedFor.get())) {
 //                if (request.getLastLogIndex() >= lastLogIndex
 //                        && request.getLastLogTerm() >= lastLogTerm) {
@@ -415,4 +422,13 @@ public class RaftServer implements Identifiable {
             responseObserver.onCompleted();
         }
     }
+
+    private void updateTerm(long newTerm) {
+        if (newTerm > currentTerm.get()) {
+            LOGGER.debug("Old term is: {}", currentTerm.get());
+            currentTerm.set(newTerm);
+            LOGGER.debug("Updated term is: {}", currentTerm.get());
+        }
+    }
+
 }
