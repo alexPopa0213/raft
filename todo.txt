@@ -1,0 +1,2 @@
+-- election timeouts still have to be investigated;
+-- what to do if leader receives request vote??
