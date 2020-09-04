@@ -409,7 +409,7 @@ public class RaftServer implements Identifiable {
                 LOGGER.debug("Vote granted to {}", request.getCandidateId());
 //                }
             } else {
-                LOGGER.debug("Vote NOT granted to {} because I already voted for", votedFor.get());
+                LOGGER.debug("Vote NOT granted to {} because I already voted for {}.", request.getCandidateId(), votedFor.get());
             }
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
