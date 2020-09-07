@@ -1,9 +1,9 @@
 package com.alex.server;
 
 import com.alex.raft.*;
-import com.alex.server.heartbeat.HeartbeatClusterRefresher;
+import com.alex.server.heartbeat.HeartbeatClusterRefresherTimerTask;
 import com.alex.server.heartbeat.HeartbeatListener;
-import com.alex.server.heartbeat.HeartbeatPublisher;
+import com.alex.server.heartbeat.HeartbeatPublisherTimerTask;
 import com.alex.server.model.LogEntry;
 import com.alex.server.model.LogEntrySerializer;
 import com.alex.server.model.ServerState;
@@ -17,11 +17,9 @@ import org.mapdb.DBMaker;
 import java.io.IOException;
 import java.sql.Timestamp;
 import java.text.DecimalFormat;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -34,6 +32,7 @@ import static java.lang.System.err;
 import static java.util.Arrays.stream;
 import static java.util.Objects.isNull;
 import static java.util.Objects.nonNull;
+import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -82,8 +81,8 @@ public class RaftServer implements Identifiable {
 
     private volatile long lastHeartBeatReceived;
 
-    ReadWriteLock readWriteLock = new ReentrantReadWriteLock();
-
+    private final ExecutorService executorService = newCachedThreadPool();
+    private final Timer timerQueue = new Timer(true);
 //    private RaftServiceGrpc.RaftServiceBlockingStub stub;
 
     public RaftServer(int port, String id) {
@@ -114,9 +113,83 @@ public class RaftServer implements Identifiable {
         LOGGER.debug("Current term is: {}.", currentTerm.get());
     }
 
-//    public void talkTo(Channel channel) {
-//        stub = newBlockingStub(channel);
-//    }
+    public void start() {
+        server = ServerBuilder.forPort(port)
+                .addService(new RaftServiceImpl())
+                .build();
+        try {
+            server.start();
+        } catch (IOException ex) {
+            LOGGER.error("Server could not be started", ex);
+            return;
+        }
+        LOGGER.info("Server {} started on port {}", id, port);
+        enableHeartbeat();
+        preventElections2();
+        handleElections2();
+        addShutdownHook();
+    }
+
+    private void enableHeartbeat() {
+        listenHeartbeats();
+        sendHeartbeats();
+        refreshCluster();
+    }
+
+    private void preventElections() {
+        Thread preventElectionsThread = new Thread(() -> {
+            if (serverStateIs(LEADER)) {
+                sendHeartbeatRPC();
+            }
+//            LOGGER.debug("Prevent elections thread stopped!");
+        });
+//        preventElectionsThread.start();
+        ScheduledExecutorService executor = newScheduledThreadPool(1);
+        executor.scheduleAtFixedRate(preventElectionsThread, 0, 150, MILLISECONDS);
+    }
+
+    private void preventElections2() {
+        TimerTask timerTask = new TimerTask() {
+            @Override
+            public void run() {
+                if (serverStateIs(LEADER)) {
+                    sendHeartbeatRPC2();
+                }
+            }
+        };
+        timerQueue.schedule(timerTask, 0, 200);
+    }
+
+    private void handleElections() {
+        ScheduledExecutorService executor = newScheduledThreadPool(1);
+        Runnable command = () -> {
+            long currentTimeMillis = currentTimeMillis();
+            if (serverStateIs(FOLLOWER, CANDIDATE)
+                    && lastHeartBeatReceived + electionTimeOut < currentTimeMillis) {
+                LOGGER.debug("Didn't receive heartbeat for: {}", currentTimeMillis - lastHeartBeatReceived - electionTimeOut);
+                startElection();
+            }
+//            else if (state == LEADER) {
+//                preventElections();
+//            }
+        };
+        executor.scheduleAtFixedRate(command, 0, electionTimeOut, MILLISECONDS);
+    }
+
+    private void handleElections2() {
+        TimerTask timerTask = new TimerTask() {
+            @Override
+            public void run() {
+                long currentTimeMillis = currentTimeMillis();
+                if (serverStateIs(FOLLOWER, CANDIDATE)
+                        && lastHeartBeatReceived + electionTimeOut < currentTimeMillis) {
+                    LOGGER.debug("Didn't receive heartbeat for: {}", currentTimeMillis - lastHeartBeatReceived - electionTimeOut);
+                    startElection2();
+                }
+            }
+        };
+        timerQueue.schedule(timerTask, 0, electionTimeOut);
+    }
 
     public void sendEmptyAppendEntriesRPC(int port) {
         AppendEntriesRequest appendEntriesRequest = AppendEntriesRequest.newBuilder()
@@ -193,81 +266,40 @@ public class RaftServer implements Identifiable {
         }
     }
 
-    public void start() {
-        server = ServerBuilder.forPort(port)
-                .addService(new RaftServiceImpl())
-                .build();
-        try {
-            server.start();
-        } catch (IOException ex) {
-            LOGGER.error("Server could not be started", ex);
-            return;
-        }
-        LOGGER.info("Server {} started on port {}", id, port);
-        enableHeartbeat();
-        preventElections();
-        handleElections();
-        addShutdownHook();
-    }
-
-    private void enableHeartbeat() {
-        listenHeartbeats();
-        sendHeartbeats();
-        refreshCluster();
-    }
-
-    private void preventElections() {
-        Thread preventElectionsThread = new Thread(() -> {
-            if (serverStateIs(LEADER)) {
-                sendHeartbeatRPC();
-            }
-//            LOGGER.debug("Prevent elections thread stopped!");
-        });
-//        preventElectionsThread.start();
-        ScheduledExecutorService executor = newScheduledThreadPool(1);
-        executor.scheduleAtFixedRate(preventElectionsThread, 0, 150, MILLISECONDS);
-    }
-
     private void listenHeartbeats() {
         new Thread(new HeartbeatListener(cluster, port)).start();
-//        ScheduledExecutorService executor = newScheduledThreadPool(1);
-//        executor.scheduleAtFixedRate(new HeartbeatListener(cluster, port), 0, 100, MILLISECONDS);
     }
 
     private void sendHeartbeats() {
-        ScheduledExecutorService executor = newScheduledThreadPool(1);
-        executor.scheduleAtFixedRate(new HeartbeatPublisher(port), 0, 200, MILLISECONDS);
+//        ScheduledExecutorService executor = newScheduledThreadPool(1);
+//        executor.scheduleAtFixedRate(new HeartbeatPublisher(port), 0, 200, MILLISECONDS);
+        timerQueue.schedule(new HeartbeatPublisherTimerTask(port), 0, 200);
     }
 
     private void refreshCluster() {
-        ScheduledExecutorService executor = newScheduledThreadPool(1);
-        executor.scheduleAtFixedRate(new HeartbeatClusterRefresher(cluster), 0, 200, MILLISECONDS);
-    }
-
-    private void handleElections() {
-        ScheduledExecutorService executor = newScheduledThreadPool(1);
-        Runnable command = () -> {
-            long currentTimeMillis = currentTimeMillis();
-            if (serverStateIs(FOLLOWER, CANDIDATE)
-                    && lastHeartBeatReceived + electionTimeOut < currentTimeMillis) {
-                LOGGER.debug("Didn't receive heartbeat for: {}", currentTimeMillis - lastHeartBeatReceived - electionTimeOut);
-                startElection();
-            }
-//            else if (state == LEADER) {
-//                preventElections();
-//            }
-        };
-        executor.scheduleAtFixedRate(command, 0, electionTimeOut, MILLISECONDS);
+//        ScheduledExecutorService executor = newScheduledThreadPool(1);
+//        executor.scheduleAtFixedRate(new HeartbeatClusterRefresher(cluster), 0, 200, MILLISECONDS);
+        timerQueue.schedule(new HeartbeatClusterRefresherTimerTask(cluster), 0, 500);
     }
 
     private void sendHeartbeatRPC() {
-        Long start = currentTimeMillis();
+        long start = currentTimeMillis();
         cluster.keySet().parallelStream().forEach(port -> {
             LOGGER.trace("Sending empty AppendEntriesRPC (to prevent election) to: {}", port);
             sendEmptyAppendEntriesRPC(port);
         });
         long end = currentTimeMillis();
         LOGGER.debug("Sending HeartbeatRPC to all servers took: {} milliseconds.", end - start);
+    }
+
+    private void sendHeartbeatRPC2() {
+        for (final Integer server : cluster.keySet()) {
+            executorService.execute(() -> {
+                if (serverStateIs(LEADER)) {
+                    sendEmptyAppendEntriesRPC(server);
+                }
+            });
+        }
     }
 
     private void startElection() {
@@ -299,6 +331,36 @@ public class RaftServer implements Identifiable {
         });
     }
 
+    private void startElection2() {
+        LOGGER.debug("Started election.");
+        convertTo(CANDIDATE);
+        updateTerm(currentTerm.get() + 1);
+        votedFor.set(null);
+
+        for (final Integer server : cluster.keySet()) {
+            executorService.execute(() -> {
+                if (serverStateIs(CANDIDATE)) {
+                    LOGGER.debug("Sending RequestVoteRpc to:" + server);
+                    RequestVoteReply requestVoteReply = requestVote(server);
+                    if (nonNull(requestVoteReply)) {
+                        if (requestVoteReply.getVoteGranted()) {
+                            LOGGER.debug("Received voted from: {}", server);
+                            receivedVotes++;
+                            if (hasMajorityOfVotes()) {
+                                LOGGER.debug("Server : {}, Switched to LEADER state.", id);
+                                convertTo(LEADER);
+                                receivedVotes = 0;
+                            }
+                        } else {
+                            updateTerm(requestVoteReply.getTerm());
+                            convertTo(FOLLOWER);
+                        }
+                    }
+                }
+            });
+        }
+    }
+
     private boolean hasMajorityOfVotes() {
         int majority = parseInt(new DecimalFormat("#").format(((double) (cluster.size() + 1)) / 2));
         LOGGER.debug("I received {} votes out of {}.", receivedVotes + 1, majority);
@@ -317,26 +379,12 @@ public class RaftServer implements Identifiable {
         }
     }
 
-    private void addShutdownHook() {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            err.println("*** shutting down gRPC server since JVM is shutting down");
-            try {
-                db.close();
-                managedChannelMap.forEach((integer, managedChannel) -> managedChannel.shutdown());
-                this.stop();
-            } catch (InterruptedException e) {
-                e.printStackTrace(err);
-            }
-            err.println("*** server shut down");
-        }));
-    }
 
-//    private void incrementCurrentTerm() {
+    //    private void incrementCurrentTerm() {
 //        readWriteLock.writeLock().lock();
 //        currentTerm.set(currentTerm() + 1);
 //        readWriteLock.writeLock().unlock();
 //    }
-
     private boolean serverStateIs(ServerState... serverState) {
 //        readWriteLock.readLock().lock();
         boolean result = stream(serverState).anyMatch(ss -> state == ss);
@@ -352,6 +400,20 @@ public class RaftServer implements Identifiable {
             state = serverState;
             LOGGER.debug("Updated state is: {} and term is {}", state.toString(), currentTerm.get());
         }
+    }
+
+    private void addShutdownHook() {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            err.println("*** shutting down gRPC server since JVM is shutting down");
+            try {
+                db.close();
+                managedChannelMap.forEach((integer, managedChannel) -> managedChannel.shutdown());
+                this.stop();
+            } catch (InterruptedException e) {
+                e.printStackTrace(err);
+            }
+            err.println("*** server shut down");
+        }));
     }
 
 //    private Long currentTerm() {

@@ -12,6 +12,7 @@ import static org.apache.logging.log4j.LogManager.getLogger;
 /**
  * Simple thread removing the servers from cluster, with a heartbeat older than x seconds;
  */
+@Deprecated
 public class HeartbeatClusterRefresher implements Runnable {
     private static final Logger LOGGER = getLogger(HeartbeatClusterRefresher.class);
 
