@@ -20,9 +20,6 @@ import java.text.DecimalFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static com.alex.raft.RaftServiceGrpc.newBlockingStub;
 import static com.alex.server.model.ServerState.*;
@@ -33,15 +30,13 @@ import static java.util.Arrays.stream;
 import static java.util.Objects.isNull;
 import static java.util.Objects.nonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
-import static java.util.concurrent.Executors.newScheduledThreadPool;
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.apache.logging.log4j.LogManager.getLogger;
 
 public class RaftServer implements Identifiable {
     private static final Logger LOGGER = getLogger(RaftServer.class);
 
-    private volatile ServerState state;
+    private ServerState state;
 
     private final int port;
     private final String id;
@@ -57,8 +52,8 @@ public class RaftServer implements Identifiable {
     /*
     state persisted to mapDB
      */
-    private volatile Atomic.Long currentTerm;
-    private volatile Atomic.String votedFor;
+    private Atomic.Long currentTerm;
+    private Atomic.String votedFor;
     private List<LogEntry> log;
 
     /*
@@ -75,15 +70,16 @@ public class RaftServer implements Identifiable {
     private Map<String, Integer> nextIndex;
     private Map<String, Integer> matchIndex;
 
-    private static final int ELECTION_TIMER_UPPER_BOUND = 3500;
-    private static final int ELECTION_TIMER_LOWER_BOUND = 2000;
+    private static final int ELECTION_TIMER_UPPER_BOUND = 1500;
+    private static final int ELECTION_TIMER_LOWER_BOUND = 500;
     private final int electionTimeOut;
 
-    private volatile long lastHeartBeatReceived;
+    private long lastHeartBeatReceived;
 
     private final ExecutorService executorService = newCachedThreadPool();
     private final Timer timerQueue = new Timer(true);
-//    private RaftServiceGrpc.RaftServiceBlockingStub stub;
+
+    private final Object LOCK = new Object();
 
     public RaftServer(int port, String id) {
         this.port = port;
@@ -125,8 +121,8 @@ public class RaftServer implements Identifiable {
         }
         LOGGER.info("Server {} started on port {}", id, port);
         enableHeartbeat();
-        preventElections2();
-        handleElections2();
+        preventElections();
+        handleElections();
         addShutdownHook();
     }
 
@@ -136,74 +132,54 @@ public class RaftServer implements Identifiable {
         refreshCluster();
     }
 
+    private void listenHeartbeats() {
+        new Thread(new HeartbeatListener(cluster, port)).start();
+    }
+
+    private void sendHeartbeats() {
+        timerQueue.schedule(new HeartbeatPublisherTimerTask(port), 0, 200);
+    }
+
+    private void refreshCluster() {
+        timerQueue.schedule(new HeartbeatClusterRefresherTimerTask(cluster), 0, 500);
+    }
+
     private void preventElections() {
-        Thread preventElectionsThread = new Thread(() -> {
-            if (serverStateIs(LEADER)) {
+        TimerTask timerTask = new TimerTask() {
+            @Override
+            public void run() {
                 sendHeartbeatRPC();
             }
-//            LOGGER.debug("Prevent elections thread stopped!");
-        });
-//        preventElectionsThread.start();
-        ScheduledExecutorService executor = newScheduledThreadPool(1);
-        executor.scheduleAtFixedRate(preventElectionsThread, 0, 150, MILLISECONDS);
+        };
+        timerQueue.schedule(timerTask, 0, electionTimeOut / 3);
     }
 
-    private void preventElections2() {
-        TimerTask timerTask = new TimerTask() {
-            @Override
-            public void run() {
-                if (serverStateIs(LEADER)) {
-                    sendHeartbeatRPC2();
-                }
-            }
-        };
-        timerQueue.schedule(timerTask, 0, 200);
-    }
-
-    private void handleElections() {
-        ScheduledExecutorService executor = newScheduledThreadPool(1);
-        Runnable command = () -> {
-            long currentTimeMillis = currentTimeMillis();
-            if (serverStateIs(FOLLOWER, CANDIDATE)
-                    && lastHeartBeatReceived + electionTimeOut < currentTimeMillis) {
-                LOGGER.debug("Didn't receive heartbeat for: {}", currentTimeMillis - lastHeartBeatReceived - electionTimeOut);
-                startElection();
-            }
-//            else if (state == LEADER) {
-//                preventElections();
-//            }
-        };
-        executor.scheduleAtFixedRate(command, 0, electionTimeOut, MILLISECONDS);
-    }
-
-    private void handleElections2() {
-        TimerTask timerTask = new TimerTask() {
-            @Override
-            public void run() {
-                long currentTimeMillis = currentTimeMillis();
-                if (serverStateIs(FOLLOWER, CANDIDATE)
-                        && lastHeartBeatReceived + electionTimeOut < currentTimeMillis) {
-                    LOGGER.debug("Didn't receive heartbeat for: {}", currentTimeMillis - lastHeartBeatReceived - electionTimeOut);
-                    startElection2();
-                }
-            }
-        };
-        timerQueue.schedule(timerTask, 0, electionTimeOut);
+    private void sendHeartbeatRPC() {
+        for (final Integer server : cluster.keySet()) {
+            executorService.execute(() -> {
+                sendEmptyAppendEntriesRPC(server);
+            });
+        }
     }
 
     public void sendEmptyAppendEntriesRPC(int port) {
-        AppendEntriesRequest appendEntriesRequest = AppendEntriesRequest.newBuilder()
-                .setLeaderId(id)
-                .setTerm(currentTerm.get())
-                .setLeaderCommitIndex(commitIndex)
-                .setPrevLogIndex(0L)
-                .setPrevLogTerm(0L)
-                .addAllEntries(new ArrayList<>())
-                .build();
         ManagedChannel managedChannel = null;
+        AppendEntriesRequest appendEntriesRequest;
+
+        synchronized (LOCK) {
+            if (!serverStateIs(LEADER)) {
+                return;
+            }
+            appendEntriesRequest = AppendEntriesRequest.newBuilder()
+                    .setLeaderId(id)
+                    .setTerm(currentTerm.get())
+                    .setLeaderCommitIndex(commitIndex)
+                    .setPrevLogIndex(0L)
+                    .setPrevLogTerm(0L)
+                    .addAllEntries(new ArrayList<>())
+                    .build();
+        }
         try {
-//            stubs.putIfAbsent(port, newBlockingStub(buildChannel(port)));
-//            stubs.get(port).appendEntries(appendEntriesRequest);
             managedChannel = ManagedChannelBuilder.forAddress("localhost", port)
                     .usePlaintext()
                     .build();
@@ -211,8 +187,8 @@ public class RaftServer implements Identifiable {
             RaftServiceGrpc.RaftServiceBlockingStub blockingStub = newBlockingStub(managedChannel);
             AppendEntriesReply appendEntriesReply = blockingStub.appendEntries(appendEntriesRequest);
             if (!appendEntriesReply.getSuccess()) {
-                updateTerm(appendEntriesReply.getTerm());
-                convertTo(FOLLOWER);
+                //check if this can really happen
+                checkAndUpdateTerm(appendEntriesReply.getTerm());
             }
         } catch (StatusRuntimeException sre) {
             LOGGER.warn("RPC failed: {}, {}", sre.getStatus(), sre.getMessage());
@@ -223,12 +199,55 @@ public class RaftServer implements Identifiable {
                 managedChannel.shutdown();
             }
         }
+
     }
 
-    private ManagedChannel buildChannel(Integer port) {
-        return ManagedChannelBuilder.forAddress("localhost", port)
-                .usePlaintext()
-                .build();
+    private void handleElections() {
+        TimerTask timerTask = new TimerTask() {
+            @Override
+            public void run() {
+                long currentTimeMillis = currentTimeMillis();
+                synchronized (LOCK) {
+                    if (!serverStateIs(FOLLOWER, CANDIDATE)
+                            || lastHeartBeatReceived + electionTimeOut > currentTimeMillis) {
+                        return;
+                    }
+                }
+                LOGGER.debug("Didn't receive heartbeat for: {}", currentTimeMillis - lastHeartBeatReceived - electionTimeOut);
+                startElection();
+            }
+        };
+        timerQueue.schedule(timerTask, 0, electionTimeOut);
+    }
+
+    private void startElection() {
+        LOGGER.debug("Started election.");
+        convertTo(CANDIDATE);
+        checkAndUpdateTerm(currentTerm.get() + 1);
+        votedFor.set(null);
+
+        for (final Integer server : cluster.keySet()) {
+            executorService.execute(() -> {
+                if (serverStateIs(CANDIDATE)) {
+                    LOGGER.debug("Sending RequestVoteRpc to:" + server);
+                    RequestVoteReply requestVoteReply = requestVote(server);
+                    if (nonNull(requestVoteReply)) {
+                        if (requestVoteReply.getVoteGranted()) {
+                            LOGGER.debug("Received voted from: {}", server);
+                            receivedVotes++;
+                            if (hasMajorityOfVotes()) {
+                                LOGGER.debug("Server : {}, Switched to LEADER state.", id);
+                                convertTo(LEADER);
+                                receivedVotes = 0;
+                            }
+                        } else {
+                            checkAndUpdateTerm(requestVoteReply.getTerm());
+                            convertTo(FOLLOWER);
+                        }
+                    }
+                }
+            });
+        }
     }
 
     public RequestVoteReply requestVote(Integer port) {
@@ -266,106 +285,95 @@ public class RaftServer implements Identifiable {
         }
     }
 
-    private void listenHeartbeats() {
-        new Thread(new HeartbeatListener(cluster, port)).start();
-    }
-
-    private void sendHeartbeats() {
-//        ScheduledExecutorService executor = newScheduledThreadPool(1);
-//        executor.scheduleAtFixedRate(new HeartbeatPublisher(port), 0, 200, MILLISECONDS);
-        timerQueue.schedule(new HeartbeatPublisherTimerTask(port), 0, 200);
-    }
-
-    private void refreshCluster() {
-//        ScheduledExecutorService executor = newScheduledThreadPool(1);
-//        executor.scheduleAtFixedRate(new HeartbeatClusterRefresher(cluster), 0, 200, MILLISECONDS);
-        timerQueue.schedule(new HeartbeatClusterRefresherTimerTask(cluster), 0, 500);
-    }
-
-    private void sendHeartbeatRPC() {
-        long start = currentTimeMillis();
-        cluster.keySet().parallelStream().forEach(port -> {
-            LOGGER.trace("Sending empty AppendEntriesRPC (to prevent election) to: {}", port);
-            sendEmptyAppendEntriesRPC(port);
-        });
-        long end = currentTimeMillis();
-        LOGGER.debug("Sending HeartbeatRPC to all servers took: {} milliseconds.", end - start);
-    }
-
-    private void sendHeartbeatRPC2() {
-        for (final Integer server : cluster.keySet()) {
-            executorService.execute(() -> {
-                if (serverStateIs(LEADER)) {
-                    sendEmptyAppendEntriesRPC(server);
-                }
-            });
-        }
-    }
-
-    private void startElection() {
-        LOGGER.debug("Started election.");
-        convertTo(CANDIDATE);
-        updateTerm(currentTerm.get() + 1);
-        votedFor.set(null);
-
-        cluster.keySet().parallelStream().forEach(port -> {
-            if (serverStateIs(CANDIDATE)) {
-                LOGGER.debug("Sending RequestVoteRpc to:" + port);
-                RequestVoteReply requestVoteReply = requestVote(port);
-                if (nonNull(requestVoteReply)) {
-                    if (requestVoteReply.getVoteGranted()) {
-                        LOGGER.debug("Received voted from: {}", port);
-                        receivedVotes++;
-                        if (hasMajorityOfVotes()) {
-                            LOGGER.debug("Server : {}, Switched to LEADER state.", id);
-                            convertTo(LEADER);
-                            receivedVotes = 0;
-//                            preventElections();
-                        }
-                    } else {
-                        updateTerm(requestVoteReply.getTerm());
-                        convertTo(FOLLOWER);
-                    }
-                }
-            }
-        });
-    }
-
-    private void startElection2() {
-        LOGGER.debug("Started election.");
-        convertTo(CANDIDATE);
-        updateTerm(currentTerm.get() + 1);
-        votedFor.set(null);
-
-        for (final Integer server : cluster.keySet()) {
-            executorService.execute(() -> {
-                if (serverStateIs(CANDIDATE)) {
-                    LOGGER.debug("Sending RequestVoteRpc to:" + server);
-                    RequestVoteReply requestVoteReply = requestVote(server);
-                    if (nonNull(requestVoteReply)) {
-                        if (requestVoteReply.getVoteGranted()) {
-                            LOGGER.debug("Received voted from: {}", server);
-                            receivedVotes++;
-                            if (hasMajorityOfVotes()) {
-                                LOGGER.debug("Server : {}, Switched to LEADER state.", id);
-                                convertTo(LEADER);
-                                receivedVotes = 0;
-                            }
-                        } else {
-                            updateTerm(requestVoteReply.getTerm());
-                            convertTo(FOLLOWER);
-                        }
-                    }
-                }
-            });
-        }
-    }
-
     private boolean hasMajorityOfVotes() {
         int majority = parseInt(new DecimalFormat("#").format(((double) (cluster.size() + 1)) / 2));
-        LOGGER.debug("I received {} votes out of {}.", receivedVotes + 1, majority);
+        LOGGER.debug("I received {} votes and majority is: {}.", receivedVotes + 1, majority);
         return receivedVotes + 1 >= majority;
     }
+
+    private boolean serverStateIs(ServerState... serverState) {
+        return stream(serverState).anyMatch(ss -> state == ss);
+    }
+
+    private void convertTo(ServerState serverState) {
+        synchronized (LOCK) {
+            if (serverState != state) {
+                LOGGER.trace("Old state is: {}.", state.toString());
+                state = serverState;
+                LOGGER.trace("Updated state is: {}.", state.toString());
+            }
+        }
+    }
+
+    //    private void preventElections() {
+//        Thread preventElectionsThread = new Thread(() -> {
+//            if (serverStateIs(LEADER)) {
+//                sendHeartbeatRPC();
+//            }
+////            LOGGER.debug("Prevent elections thread stopped!");
+//        });
+////        preventElectionsThread.start();
+//        ScheduledExecutorService executor = newScheduledThreadPool(1);
+//        executor.scheduleAtFixedRate(preventElectionsThread, 0, 150, MILLISECONDS);
+//    }
+
+
+//    private void handleElections() {
+//        ScheduledExecutorService executor = newScheduledThreadPool(1);
+//        Runnable command = () -> {
+//            long currentTimeMillis = currentTimeMillis();
+//            if (serverStateIs(FOLLOWER, CANDIDATE)
+//                    && lastHeartBeatReceived + electionTimeOut < currentTimeMillis) {
+//                LOGGER.debug("Didn't receive heartbeat for: {}", currentTimeMillis - lastHeartBeatReceived - electionTimeOut);
+//                startElection();
+//            }
+////            else if (state == LEADER) {
+////                preventElections();
+////            }
+//        };
+//        executor.scheduleAtFixedRate(command, 0, electionTimeOut, MILLISECONDS);
+
+//    }
+
+//
+//    private void sendHeartbeatRPC() {
+//        long start = currentTimeMillis();
+//        cluster.keySet().parallelStream().forEach(port -> {
+//            LOGGER.trace("Sending empty AppendEntriesRPC (to prevent election) to: {}", port);
+//            sendEmptyAppendEntriesRPC(port);
+//        });
+//        long end = currentTimeMillis();
+//        LOGGER.debug("Sending HeartbeatRPC to all servers took: {} milliseconds.", end - start);
+//    }
+
+//    private void startElection() {
+//        LOGGER.debug("Started election.");
+//        convertTo(CANDIDATE);
+//        updateTerm(currentTerm.get() + 1);
+//        votedFor.set(null);
+//
+//        cluster.keySet().parallelStream().forEach(port -> {
+//            if (serverStateIs(CANDIDATE)) {
+//                LOGGER.debug("Sending RequestVoteRpc to:" + port);
+//                RequestVoteReply requestVoteReply = requestVote(port);
+//                if (nonNull(requestVoteReply)) {
+//                    if (requestVoteReply.getVoteGranted()) {
+//                        LOGGER.debug("Received voted from: {}", port);
+//                        receivedVotes++;
+//                        if (hasMajorityOfVotes()) {
+//                            LOGGER.debug("Server : {}, Switched to LEADER state.", id);
+//                            convertTo(LEADER);
+//                            receivedVotes = 0;
+////                            preventElections();
+//                        }
+//                    } else {
+//                        updateTerm(requestVoteReply.getTerm());
+//                        convertTo(FOLLOWER);
+//                    }
+//                }
+//            }
+//        });
+//    }
 
     private void stop() throws InterruptedException {
         if (server != null) {
@@ -376,29 +384,6 @@ public class RaftServer implements Identifiable {
     public void blockUntilShutdown() throws InterruptedException {
         if (server != null) {
             server.awaitTermination();
-        }
-    }
-
-
-    //    private void incrementCurrentTerm() {
-//        readWriteLock.writeLock().lock();
-//        currentTerm.set(currentTerm() + 1);
-//        readWriteLock.writeLock().unlock();
-//    }
-    private boolean serverStateIs(ServerState... serverState) {
-//        readWriteLock.readLock().lock();
-        boolean result = stream(serverState).anyMatch(ss -> state == ss);
-//        readWriteLock.readLock().unlock();
-        return result;
-    }
-
-    private void convertTo(ServerState serverState) {
-//        readWriteLock.writeLock().lock();
-//        readWriteLock.writeLock().unlock();
-        if (serverState != state) {
-            LOGGER.debug("Old state is: {}.", state.toString());
-            state = serverState;
-            LOGGER.debug("Updated state is: {} and term is {}", state.toString(), currentTerm.get());
         }
     }
 
@@ -416,20 +401,6 @@ public class RaftServer implements Identifiable {
         }));
     }
 
-//    private Long currentTerm() {
-//        readWriteLock.readLock().lock();
-//        Long term = currentTerm.get();
-//        readWriteLock.readLock().unlock();
-//        return term;
-//    }
-
-//    private String votedFor() {
-//        readWriteLock.readLock().lock();
-//        String serverId = votedFor.get();
-//        readWriteLock.readLock().unlock();
-//        return serverId;
-//    }
-
     @Override
     public String getId() {
         return id;
@@ -439,13 +410,16 @@ public class RaftServer implements Identifiable {
         @Override
         public void appendEntries(AppendEntriesRequest request, StreamObserver<AppendEntriesReply> responseObserver) {
             AppendEntriesReply.Builder builder = AppendEntriesReply.newBuilder();
-            long term = currentTerm.get();
-            if (isHeartBeat(request) && request.getTerm() >= term) {
-                convertTo(FOLLOWER);
-                lastHeartBeatReceived = currentTimeMillis();
-                updateTerm(request.getTerm());
-                LOGGER.debug("Received and accepted heartbeat RPC from {}. Current state is: {}",
-                        request.getLeaderId(), state.toString());
+            final long term;
+            synchronized (LOCK) {
+                term = currentTerm.get();
+                if (isHeartBeat(request) && request.getTerm() >= term) {
+                    state = FOLLOWER;
+                    lastHeartBeatReceived = currentTimeMillis();
+                    currentTerm.set(term);
+                    LOGGER.debug("Received and accepted heartbeat RPC from {}. Current state is: {}",
+                            request.getLeaderId(), state.toString());
+                }
             }
             builder.setSuccess(request.getTerm() >= term);
             builder.setTerm(term);
@@ -485,11 +459,14 @@ public class RaftServer implements Identifiable {
         }
     }
 
-    private void updateTerm(long newTerm) {
-        if (newTerm > currentTerm.get()) {
-            LOGGER.debug("Old term is: {}", currentTerm.get());
-            currentTerm.set(newTerm);
-            LOGGER.debug("Updated term is: {}", currentTerm.get());
+    private void checkAndUpdateTerm(long newTerm) {
+        synchronized (LOCK) {
+            if (newTerm > currentTerm.get()) {
+                LOGGER.debug("Old term is: {}", currentTerm.get());
+                currentTerm.set(newTerm);
+                LOGGER.debug("Updated term is: {}", currentTerm.get());
+                state = FOLLOWER;
+            }
         }
     }
 
