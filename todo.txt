@@ -4,5 +4,5 @@
 
 https://david-rodenas.com/RaftImplementation/
 
-
-startElection() blocks to be synchronized
+check the schedule of election();
+append entries should happen all the time also;

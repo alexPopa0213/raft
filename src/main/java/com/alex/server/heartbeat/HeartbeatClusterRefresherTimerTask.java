@@ -25,7 +25,7 @@ public class HeartbeatClusterRefresherTimerTask extends TimerTask {
         cluster.entrySet().removeIf(entry -> {
             Timestamp clusterTimestamp = entry.getValue();
             Timestamp currentTimestamp = new Timestamp(new Date().getTime());
-            return clusterTimestamp.getTime() < currentTimestamp.getTime() - TimeUnit.SECONDS.toMillis(3);
+            return clusterTimestamp.getTime() < currentTimestamp.getTime() - TimeUnit.SECONDS.toMillis(10);
         });
         LOGGER.trace("Cluster is now: {}", cluster);
     }
