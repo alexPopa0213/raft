@@ -12,29 +12,45 @@ public class Main {
         server1.start();
         server1.blockUntilShutdown();
 
-//        Thread.sleep(5000);
+
+//        final ExecutorService executorService = newCachedThreadPool();
+//        Timer timer = new Timer(true);
+//        Map<Integer, ManagedChannel> channels = new ConcurrentHashMap<>();
 //
-//        ManagedChannel channel = ManagedChannelBuilder
-//                .forAddress("localhost", 50052)
-//                .usePlaintext()
-//                .build();
-//        server1.talkTo(channel);
-//        server1.sendEmptyAppendEntriesRPC();
-
-
-//        DB db = server1.getDb();
-//        HTreeMap<String, String> map = db.hashMap("mapdbtest")
-//                .keySerializer(Serializer.STRING)
-//                .valueSerializer(Serializer.STRING)
-//                .createOrOpen();
-
-//        map.put("key1", "value1");
-//        Atomic.String atomic = db.atomicString("atomic").createOrOpen();
-//        atomic.set("plm");
-
-//        System.out.println(atomic.get());
-
-//        map.close();
-
+//        List<Integer> ports = Arrays.asList(50052, 50053, 50054, 50055, 50056, 50057);
+//        ports.forEach(port -> {
+//            ManagedChannel managedChannel = ManagedChannelBuilder.forAddress("127.0.0.1", port)
+//                    .executor(executorService)
+//                    .usePlaintext()
+//                    .build();
+//            channels.put(port, managedChannel);
+//        });
+//
+//        timer.schedule(new TimerTask() {
+//            @Override
+//            public void run() {
+//                for (Integer port : ports) {
+//                    executorService.execute(() -> {
+//                        long start = System.currentTimeMillis();
+//
+//                        AppendEntriesRequest appendEntriesRequest = AppendEntriesRequest.newBuilder()
+//                                .setLeaderId("srv1")
+//                                .setTerm(1)
+//                                .setLeaderCommitIndex(1)
+//                                .setPrevLogIndex(0L)
+//                                .setPrevLogTerm(0L)
+//                                .addAllEntries(new ArrayList<>())
+//                                .build();
+//                        RaftServiceGrpc.RaftServiceBlockingStub stub = RaftServiceGrpc.newBlockingStub(channels.get(port));
+//                        AppendEntriesReply reply = stub.appendEntries(appendEntriesRequest);
+//
+//                        System.out.println("Append entries to port " + port + " took: "
+//                                + (System.currentTimeMillis() - start) + " ms");
+//                    });
+//                }
+//            }
+//        }, 0, 50);
+//
+//        server1.blockUntilShutdown();
     }
 }

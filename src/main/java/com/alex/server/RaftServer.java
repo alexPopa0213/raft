@@ -25,7 +25,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static com.alex.raft.RaftServiceGrpc.newBlockingStub;
 import static com.alex.server.model.ServerState.*;
 import static java.lang.Integer.parseInt;
-import static java.lang.System.*;
+import static java.lang.System.currentTimeMillis;
+import static java.lang.System.err;
 import static java.util.Arrays.stream;
 import static java.util.Objects.isNull;
 import static java.util.Objects.nonNull;
@@ -70,8 +71,8 @@ public class RaftServer implements Identifiable {
     private Map<String, Integer> nextIndex;
     private Map<String, Integer> matchIndex;
 
-    private static final int ELECTION_TIMER_UPPER_BOUND = 300;
-    private static final int ELECTION_TIMER_LOWER_BOUND = 150;
+    private static final int ELECTION_TIMER_UPPER_BOUND = 350;
+    private static final int ELECTION_TIMER_LOWER_BOUND = 250;
     private final int electionTimeOut;
     private final int leaderHeartbeatTimeout;
 
@@ -81,7 +82,7 @@ public class RaftServer implements Identifiable {
     private final AtomicBoolean leaderAlreadyElected = new AtomicBoolean(false);
 
     private final ExecutorService executorService = newCachedThreadPool();
-    private final Timer timerQueue = new Timer(true);
+    private final Timer timerQueue = new Timer(false);
 
     private final Object LOCK = new Object();
 
@@ -91,7 +92,7 @@ public class RaftServer implements Identifiable {
         initPersistentState(id);
         state = FOLLOWER;
         electionTimeOut = generateRandomElectionTimeout();
-        leaderHeartbeatTimeout = electionTimeOut / 3;
+        leaderHeartbeatTimeout = electionTimeOut / 4;
     }
 
     private int generateRandomElectionTimeout() {
@@ -150,7 +151,7 @@ public class RaftServer implements Identifiable {
                 sendHeartbeatRPC();
             }
         };
-        timerQueue.schedule(timerTask, leaderHeartbeatTimeout, leaderHeartbeatTimeout);
+        timerQueue.schedule(timerTask, 0, leaderHeartbeatTimeout);
     }
 
     private void sendHeartbeatRPC() {
@@ -164,7 +165,11 @@ public class RaftServer implements Identifiable {
                 long start = currentTimeMillis();
                 LOGGER.debug("Sending heartbeat RPC to: {}", server);
                 sendEmptyAppendEntriesRPC(server);
-                LOGGER.debug("Heartbeat rpc to {} took: {} ms.", server, currentTimeMillis() - start);
+
+                long p1 = currentTimeMillis() - start;
+                if (p1 > leaderHeartbeatTimeout) {
+                    LOGGER.debug("Heartbeat rpc to {} took longer than heartbeat: {} ms.", server, p1);
+                }
             });
         }
     }
@@ -176,6 +181,7 @@ public class RaftServer implements Identifiable {
 
         synchronized (LOCK) {
             if (serverStateIsNot(LEADER)) {
+                LOGGER.debug("I'm not LEADER anymore, will not send any more heartbeats!.");
                 return;
             }
             leaderAlreadyElected.set(true);
@@ -352,7 +358,6 @@ public class RaftServer implements Identifiable {
     class RaftServiceImpl extends RaftServiceGrpc.RaftServiceImplBase {
         @Override
         public void appendEntries(AppendEntriesRequest request, StreamObserver<AppendEntriesReply> responseObserver) {
-            long start = currentTimeMillis();
             AppendEntriesReply.Builder builder = AppendEntriesReply.newBuilder();
             final long myTerm;
             LOGGER.debug("Received heartbeat RPC from {}.", request.getLeaderId());
@@ -371,7 +376,6 @@ public class RaftServer implements Identifiable {
             builder.setTerm(myTerm);
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
-            LOGGER.debug("I responded to appendEntriesRPC in: {} ms", currentTimeMillis() - start);
         }
 
         private boolean isHeartBeat(AppendEntriesRequest request) {
