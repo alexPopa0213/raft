@@ -4,5 +4,4 @@
 
 https://david-rodenas.com/RaftImplementation/
 
-check the schedule of election();
-append entries should happen all the time also;
+check the conditions of request vote; especially when leader receives it;

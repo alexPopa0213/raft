@@ -25,8 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static com.alex.raft.RaftServiceGrpc.newBlockingStub;
 import static com.alex.server.model.ServerState.*;
 import static java.lang.Integer.parseInt;
-import static java.lang.System.currentTimeMillis;
-import static java.lang.System.err;
+import static java.lang.System.*;
 import static java.util.Arrays.stream;
 import static java.util.Objects.isNull;
 import static java.util.Objects.nonNull;
@@ -284,6 +283,7 @@ public class RaftServer implements Identifiable {
 
     private ManagedChannel buildChannel(Integer port) {
         ManagedChannel managedChannel = ManagedChannelBuilder.forAddress("127.0.0.1", port)
+                .executor(executorService)
                 .usePlaintext()
                 .build();
         LOGGER.debug("Created managedChannel for port {}.", port);
@@ -352,6 +352,7 @@ public class RaftServer implements Identifiable {
     class RaftServiceImpl extends RaftServiceGrpc.RaftServiceImplBase {
         @Override
         public void appendEntries(AppendEntriesRequest request, StreamObserver<AppendEntriesReply> responseObserver) {
+            long start = currentTimeMillis();
             AppendEntriesReply.Builder builder = AppendEntriesReply.newBuilder();
             final long myTerm;
             LOGGER.debug("Received heartbeat RPC from {}.", request.getLeaderId());
@@ -370,6 +371,7 @@ public class RaftServer implements Identifiable {
             builder.setTerm(myTerm);
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
+            LOGGER.debug("I responded to appendEntriesRPC in: {} ms", currentTimeMillis() - start);
         }
 
         private boolean isHeartBeat(AppendEntriesRequest request) {
