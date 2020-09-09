@@ -1,4 +1,4 @@
-package com.alex.server.heartbeat;
+package com.alex.server.heartbeat.udp;
 
 import org.apache.logging.log4j.Logger;
 
@@ -15,9 +15,11 @@ public class HeartbeatClusterRefresherTimerTask extends TimerTask {
     private static final Logger LOGGER = getLogger(HeartbeatClusterRefresherTimerTask.class);
 
     private final Map<Integer, Timestamp> cluster;
+    private final long expirationPeriod;
 
-    public HeartbeatClusterRefresherTimerTask(Map<Integer, Timestamp> cluster) {
+    public HeartbeatClusterRefresherTimerTask(Map<Integer, Timestamp> cluster, long expirationPeriod) {
         this.cluster = cluster;
+        this.expirationPeriod = expirationPeriod;
     }
 
     @Override
@@ -25,7 +27,7 @@ public class HeartbeatClusterRefresherTimerTask extends TimerTask {
         cluster.entrySet().removeIf(entry -> {
             Timestamp clusterTimestamp = entry.getValue();
             Timestamp currentTimestamp = new Timestamp(new Date().getTime());
-            return clusterTimestamp.getTime() < currentTimestamp.getTime() - TimeUnit.SECONDS.toMillis(10);
+            return clusterTimestamp.getTime() < currentTimestamp.getTime() - TimeUnit.SECONDS.toMillis(expirationPeriod);
         });
         LOGGER.trace("Cluster is now: {}", cluster);
     }

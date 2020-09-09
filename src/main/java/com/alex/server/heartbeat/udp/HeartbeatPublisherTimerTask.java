@@ -1,4 +1,4 @@
-package com.alex.server.heartbeat;
+package com.alex.server.heartbeat.udp;
 
 import org.apache.logging.log4j.Logger;
 

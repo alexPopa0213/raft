@@ -1,9 +1,9 @@
 package com.alex.server;
 
 import com.alex.raft.*;
-import com.alex.server.heartbeat.HeartbeatClusterRefresherTimerTask;
-import com.alex.server.heartbeat.HeartbeatListener;
-import com.alex.server.heartbeat.HeartbeatPublisherTimerTask;
+import com.alex.server.heartbeat.udp.HeartbeatClusterRefresherTimerTask;
+import com.alex.server.heartbeat.udp.HeartbeatListenerTimerTask;
+import com.alex.server.heartbeat.udp.HeartbeatPublisherTimerTask;
 import com.alex.server.model.LogEntry;
 import com.alex.server.model.LogEntrySerializer;
 import com.alex.server.model.ServerState;
@@ -93,6 +93,10 @@ public class RaftServer implements Identifiable {
         state = FOLLOWER;
         electionTimeOut = generateRandomElectionTimeout();
         leaderHeartbeatTimeout = electionTimeOut / 4;
+//        cluster.put(50051, new Timestamp(new Date().getTime()));
+//        cluster.put(50052, new Timestamp(new Date().getTime()));
+//        cluster.put(50053, new Timestamp(new Date().getTime()));
+//        cluster.remove(port);
     }
 
     private int generateRandomElectionTimeout() {
@@ -133,15 +137,15 @@ public class RaftServer implements Identifiable {
     }
 
     private void listenHeartbeats() {
-        new Thread(new HeartbeatListener(cluster, port)).start();
+        timerQueue.schedule(new HeartbeatListenerTimerTask(cluster, port), 0, 50);
     }
 
     private void sendHeartbeats() {
-        timerQueue.schedule(new HeartbeatPublisherTimerTask(port), 0, 200);
+        timerQueue.schedule(new HeartbeatPublisherTimerTask(port), 0, 300);
     }
 
     private void refreshCluster() {
-        timerQueue.schedule(new HeartbeatClusterRefresherTimerTask(cluster), 0, 1000);
+        timerQueue.schedule(new HeartbeatClusterRefresherTimerTask(cluster, 5), 0, 1000);
     }
 
     private void preventElections() {
@@ -163,13 +167,13 @@ public class RaftServer implements Identifiable {
         for (final Integer server : cluster.keySet()) {
             executorService.execute(() -> {
                 long start = currentTimeMillis();
-                LOGGER.debug("Sending heartbeat RPC to: {}", server);
+                LOGGER.trace("Sending heartbeat RPC to: {}", server);
                 sendEmptyAppendEntriesRPC(server);
 
                 long p1 = currentTimeMillis() - start;
-                if (p1 > leaderHeartbeatTimeout) {
-                    LOGGER.debug("Heartbeat rpc to {} took longer than heartbeat: {} ms.", server, p1);
-                }
+//                if (p1 > leaderHeartbeatTimeout) {
+                LOGGER.debug("Heartbeat rpc to {} took: {} ms.", server, p1);
+//                }
             });
         }
     }
