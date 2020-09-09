@@ -20,6 +20,7 @@ import java.text.DecimalFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static com.alex.raft.RaftServiceGrpc.newBlockingStub;
 import static com.alex.server.model.ServerState.*;
@@ -45,6 +46,7 @@ public class RaftServer implements Identifiable {
     private final Map<Integer, Timestamp> cluster = new ConcurrentHashMap<>();
 
     private final Map<Integer, ManagedChannel> managedChannelMap = new ConcurrentHashMap<>();
+    private final Map<Integer, RaftServiceGrpc.RaftServiceBlockingStub> stubs = new ConcurrentHashMap<>();
 
     private DB db;
 
@@ -74,7 +76,10 @@ public class RaftServer implements Identifiable {
     private final int electionTimeOut;
     private final int leaderHeartbeatTimeout;
 
+    //to be removed
     private long lastHeartBeatReceived;
+
+    private final AtomicBoolean leaderAlreadyElected = new AtomicBoolean(false);
 
     private final ExecutorService executorService = newCachedThreadPool();
     private final Timer timerQueue = new Timer(true);
@@ -100,7 +105,6 @@ public class RaftServer implements Identifiable {
         log = db.indexTreeList(id + "_log", new LogEntrySerializer()).createOrOpen();
         votedFor = db.atomicString(id + "_votedFor").createOrOpen();
         currentTerm = db.atomicLong(id + "_current_term").createOrOpen();
-        LOGGER.debug("Current term is: {}.", currentTerm.get());
     }
 
     public void start() {
@@ -115,6 +119,7 @@ public class RaftServer implements Identifiable {
         }
         LOGGER.info("Server {} started on port {}", id, port);
         LOGGER.info("Election timeout randomly chosen: {}", electionTimeOut);
+        LOGGER.info("Leader heartbeat timeout randomly chosen: {}", leaderHeartbeatTimeout);
         enableHeartbeat();
         preventElections();
         handleElections();
@@ -151,26 +156,30 @@ public class RaftServer implements Identifiable {
 
     private void sendHeartbeatRPC() {
         synchronized (LOCK) {
-            if (!serverStateIs(LEADER)) {
+            if (serverStateIsNot(LEADER)) {
                 return;
             }
         }
         for (final Integer server : cluster.keySet()) {
             executorService.execute(() -> {
+                long start = currentTimeMillis();
                 LOGGER.debug("Sending heartbeat RPC to: {}", server);
                 sendEmptyAppendEntriesRPC(server);
+                LOGGER.debug("Heartbeat rpc to {} took: {} ms.", server, currentTimeMillis() - start);
             });
         }
     }
 
     public void sendEmptyAppendEntriesRPC(int port) {
-        ManagedChannel managedChannel = null;
+        final ManagedChannel managedChannel;
+        final RaftServiceGrpc.RaftServiceBlockingStub blockingStub;
         AppendEntriesRequest appendEntriesRequest;
 
         synchronized (LOCK) {
-            if (!serverStateIs(LEADER)) {
+            if (serverStateIsNot(LEADER)) {
                 return;
             }
+            leaderAlreadyElected.set(true);
             appendEntriesRequest = AppendEntriesRequest.newBuilder()
                     .setLeaderId(id)
                     .setTerm(currentTerm.get())
@@ -181,11 +190,8 @@ public class RaftServer implements Identifiable {
                     .build();
         }
         try {
-            managedChannel = ManagedChannelBuilder.forAddress("localhost", port)
-                    .usePlaintext()
-                    .build();
-            managedChannelMap.putIfAbsent(port, managedChannel);
-            RaftServiceGrpc.RaftServiceBlockingStub blockingStub = newBlockingStub(managedChannel);
+            managedChannel = managedChannelMap.computeIfAbsent(port, this::buildChannel);
+            blockingStub = stubs.computeIfAbsent(port, integer -> newBlockingStub(managedChannel));
             AppendEntriesReply appendEntriesReply = blockingStub.appendEntries(appendEntriesRequest);
             if (!appendEntriesReply.getSuccess()) {
                 LOGGER.debug("Heartbeat to server {} failed.", port);
@@ -194,26 +200,20 @@ public class RaftServer implements Identifiable {
         } catch (StatusRuntimeException sre) {
             LOGGER.warn("RPC failed: {}, {}", sre.getStatus(), sre.getMessage());
         } catch (Exception e) {
-            LOGGER.error("ERROR append entries", e);
-        } finally {
-            if (nonNull(managedChannel) && !managedChannel.isShutdown()) {
-                managedChannel.shutdown();
-            }
+            LOGGER.error("ERROR calling appendEntries RPC entries", e);
         }
-
     }
 
     private void handleElections() {
         TimerTask timerTask = new TimerTask() {
             @Override
             public void run() {
-                long currentTimeMillis = currentTimeMillis();
                 synchronized (LOCK) {
-                    if (serverStateIs(LEADER) || lastHeartBeatReceived + electionTimeOut >= currentTimeMillis) {
+                    if (leaderAlreadyElected.getAndSet(false)) {
                         return;
                     }
                 }
-                LOGGER.debug("Didn't receive heartbeat for: {}", currentTimeMillis - lastHeartBeatReceived - electionTimeOut);
+                LOGGER.debug("Started election");
                 startElection();
             }
         };
@@ -226,14 +226,13 @@ public class RaftServer implements Identifiable {
             state = CANDIDATE;
             currentTerm.set(currentTerm.get() + 1);
             votedFor.set(null);
-            //reset election timer
             lastHeartBeatReceived = currentTimeMillis();
         }
 
         for (final Integer server : cluster.keySet()) {
             executorService.execute(() -> {
                 synchronized (LOCK) {
-                    if (!serverStateIs(CANDIDATE)) {
+                    if (serverStateIsNot(CANDIDATE)) {
                         return;
                     }
                 }
@@ -261,7 +260,8 @@ public class RaftServer implements Identifiable {
     public RequestVoteReply requestVote(Integer port) {
         RequestVoteRequest requestVoteRequest;
         RequestVoteReply requestVoteReply = null;
-        ManagedChannel managedChannel = null;
+        final ManagedChannel managedChannel;
+        final RaftServiceGrpc.RaftServiceBlockingStub blockingStub;
         synchronized (LOCK) {
             int lastLogIndex = log.size() - 1;
             requestVoteRequest = RequestVoteRequest.newBuilder()
@@ -272,22 +272,22 @@ public class RaftServer implements Identifiable {
                     .build();
         }
         try {
-            managedChannel = ManagedChannelBuilder.forAddress("localhost", port)
-                    .usePlaintext()
-                    .build();
-            managedChannelMap.putIfAbsent(port, managedChannel);
-            RaftServiceGrpc.RaftServiceBlockingStub blockingStub = newBlockingStub(managedChannel);
+            managedChannel = managedChannelMap.computeIfAbsent(port, this::buildChannel);
+            blockingStub = stubs.computeIfAbsent(port, integer -> newBlockingStub(managedChannel));
             requestVoteReply = blockingStub.requestVote(requestVoteRequest);
-            managedChannel.shutdown();
         } catch (StatusRuntimeException sre) {
             LOGGER.warn("RPC failed: {}, {}", sre.getStatus(), sre.getMessage());
             removeServerIfUnavailable(sre.getStatus(), port);
-        } finally {
-            if (nonNull(managedChannel) && !managedChannel.isShutdown()) {
-                managedChannel.shutdown();
-            }
         }
         return requestVoteReply;
+    }
+
+    private ManagedChannel buildChannel(Integer port) {
+        ManagedChannel managedChannel = ManagedChannelBuilder.forAddress("127.0.0.1", port)
+                .usePlaintext()
+                .build();
+        LOGGER.debug("Created managedChannel for port {}.", port);
+        return managedChannel;
     }
 
     private void checkAndUpdateTerm(long newTerm) {
@@ -314,8 +314,8 @@ public class RaftServer implements Identifiable {
         return receivedVotes + 1 >= majority;
     }
 
-    private boolean serverStateIs(ServerState... serverState) {
-        return stream(serverState).anyMatch(ss -> state == ss);
+    private boolean serverStateIsNot(ServerState... serverState) {
+        return stream(serverState).noneMatch(ss -> state == ss);
     }
 
     private void stop() throws InterruptedException {
@@ -361,6 +361,7 @@ public class RaftServer implements Identifiable {
                     state = FOLLOWER;
                     lastHeartBeatReceived = currentTimeMillis();
                     currentTerm.set(request.getTerm());
+                    leaderAlreadyElected.set(true);
                     LOGGER.debug("Received and accepted heartbeat RPC from {}. Current state is: {}",
                             request.getLeaderId(), state.toString());
                 }
@@ -393,6 +394,7 @@ public class RaftServer implements Identifiable {
 //                        && request.getLastLogTerm() >= lastLogTerm) {
                     builder.setVoteGranted(true);
                     votedFor.set(request.getCandidateId());
+                    leaderAlreadyElected.set(true);
                     lastHeartBeatReceived = currentTimeMillis();//??????
                     LOGGER.debug("Vote granted to {}", request.getCandidateId());
 //                }
