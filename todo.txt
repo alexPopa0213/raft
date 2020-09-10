@@ -1,7 +1,0 @@
--- election timeouts still have to be investigated;
--- what to do if leader receives request vote??
--- add checks and behaviour for minimum 3 servers;
-
-https://david-rodenas.com/RaftImplementation/
-
-check the conditions of request vote; especially when leader receives it;

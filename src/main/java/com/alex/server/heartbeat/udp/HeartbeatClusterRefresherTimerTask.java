@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.TimerTask;
 import java.util.concurrent.TimeUnit;
 
+import static com.alex.server.config.ApplicationProperties.UDP_HEARTBEAT_EXPIRATION_TIME;
 import static org.apache.logging.log4j.LogManager.getLogger;
 
 public class HeartbeatClusterRefresherTimerTask extends TimerTask {
@@ -15,11 +16,9 @@ public class HeartbeatClusterRefresherTimerTask extends TimerTask {
     private static final Logger LOGGER = getLogger(HeartbeatClusterRefresherTimerTask.class);
 
     private final Map<Integer, Timestamp> cluster;
-    private final long expirationPeriod;
 
-    public HeartbeatClusterRefresherTimerTask(Map<Integer, Timestamp> cluster, long expirationPeriod) {
+    public HeartbeatClusterRefresherTimerTask(Map<Integer, Timestamp> cluster) {
         this.cluster = cluster;
-        this.expirationPeriod = expirationPeriod;
     }
 
     @Override
@@ -27,7 +26,7 @@ public class HeartbeatClusterRefresherTimerTask extends TimerTask {
         cluster.entrySet().removeIf(entry -> {
             Timestamp clusterTimestamp = entry.getValue();
             Timestamp currentTimestamp = new Timestamp(new Date().getTime());
-            return clusterTimestamp.getTime() < currentTimestamp.getTime() - TimeUnit.SECONDS.toMillis(expirationPeriod);
+            return clusterTimestamp.getTime() < currentTimestamp.getTime() - TimeUnit.SECONDS.toMillis(UDP_HEARTBEAT_EXPIRATION_TIME);
         });
         LOGGER.trace("Cluster is now: {}", cluster);
     }

@@ -1,4 +1,4 @@
-package com.alex.server;
+package com.alex.server.model;
 
 public interface Identifiable {
 

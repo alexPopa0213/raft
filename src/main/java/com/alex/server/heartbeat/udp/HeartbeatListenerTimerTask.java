@@ -43,8 +43,10 @@ public class HeartbeatListenerTimerTask extends TimerTask {
             socket.receive(packet);
             int receivedPort = parseInt(new String(packet.getData(), UTF_8).trim());
             if (receivedPort != port) {
+                if (!cluster.containsKey(receivedPort)) {
+                    LOGGER.debug("Server: {} joined", receivedPort);
+                }
                 cluster.put(receivedPort, new Timestamp(new Date().getTime()));
-                LOGGER.trace("Server: {} joined", receivedPort);
             }
         } catch (SocketTimeoutException ste) {
             LOGGER.trace("No packet received in the last {} ms,", socketTimeout);

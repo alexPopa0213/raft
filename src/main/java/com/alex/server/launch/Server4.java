@@ -1,4 +1,4 @@
-package com.alex.server.mains;
+package com.alex.server.launch;
 
 import com.alex.server.RaftServer;
 
