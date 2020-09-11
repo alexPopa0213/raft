@@ -1,15 +1,17 @@
-package com.alex.server.heartbeat;
+package com.alex.server.heartbeat.udp;
 
 import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
 import java.net.*;
+import java.util.TimerTask;
 
 import static java.lang.Runtime.getRuntime;
 import static org.apache.logging.log4j.LogManager.getLogger;
 
-public class HeartbeatPublisher implements Runnable {
-    private static final Logger LOGGER = getLogger(HeartbeatPublisher.class);
+public class HeartbeatPublisherTimerTask extends TimerTask {
+
+    private static final Logger LOGGER = getLogger(HeartbeatPublisherTimerTask.class);
 
     private DatagramSocket socket = null;
     private InetAddress group = null;
@@ -17,7 +19,7 @@ public class HeartbeatPublisher implements Runnable {
 
     private final Integer port;
 
-    public HeartbeatPublisher(Integer port) {
+    public HeartbeatPublisherTimerTask(Integer port) {
         this.port = port;
         initSocket();
         addShutdownHook();

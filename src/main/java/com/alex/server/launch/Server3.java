@@ -1,8 +1,8 @@
-package com.alex.server.mains;
+package com.alex.server.launch;
 
 import com.alex.server.RaftServer;
 
-public class Main3 {
+public class Server3 {
     public static void main(String[] args) throws InterruptedException {
 
         final RaftServer server3 = new RaftServer(50053, "srv3");
