@@ -1,0 +1,2 @@
+Log replication:
+prevLogIndex -> maybe change some int64(long) to int32(int) in proto(indexes);

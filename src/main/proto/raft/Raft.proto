@@ -35,7 +35,7 @@ message AppendEntriesRequest {
     /*
     log entries to store (empty for heartbeat; may send more than one for efficiency
         */
-    repeated string entries = 5;
+    repeated LogEntry entries = 5;
     /*
     leader’s commitIndex
         */
@@ -83,5 +83,17 @@ message RequestVoteReply {
     bool voteGranted = 2;
 }
 
-
-
+message LogEntry {
+    /*
+    the term when entry was added
+        */
+    int64 term = 1;
+    /*
+    the entry index in the log
+        */
+    int32 index = 2;
+    /*
+    the command to be applied to the state machine
+        */
+    string command = 3;
+}

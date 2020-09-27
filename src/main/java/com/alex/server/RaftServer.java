@@ -8,6 +8,7 @@ import com.alex.server.model.Identifiable;
 import com.alex.server.model.LogEntry;
 import com.alex.server.model.LogEntrySerializer;
 import com.alex.server.model.ServerState;
+import com.alex.server.util.Utils;
 import io.grpc.*;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.Logger;
@@ -67,8 +68,8 @@ public class RaftServer implements Identifiable {
     /*
     leader specific volatile state
      */
-    private Map<String, Integer> nextIndex;
-    private Map<String, Integer> matchIndex;
+    private Map<Integer, Integer> nextIndex;
+    private Map<Integer, Integer> matchIndex;
 
     private final int electionTimeOut;
     private final int leaderHeartbeatTimeout;
@@ -175,12 +176,16 @@ public class RaftServer implements Identifiable {
                 return;
             }
             leaderAlreadyElected.set(true);
+            //index before appending logs from client
+            int prevLogIndex = log.size() - 1;
+            long prevLogTerm = prevLogIndex != -1 ? log.get(prevLogIndex).getTerm() : -1;
+            //append log entries from client, then send request
             appendEntriesRequest = AppendEntriesRequest.newBuilder()
                     .setLeaderId(id)
                     .setTerm(currentTerm.get())
                     .setLeaderCommitIndex(commitIndex)
-                    .setPrevLogIndex(0L)
-                    .setPrevLogTerm(0L)
+                    .setPrevLogIndex(prevLogIndex)
+                    .setPrevLogTerm(prevLogTerm)
                     .addAllEntries(new ArrayList<>())
                     .build();
         }
@@ -260,11 +265,12 @@ public class RaftServer implements Identifiable {
         final RaftServiceGrpc.RaftServiceBlockingStub blockingStub;
         synchronized (LOCK) {
             int lastLogIndex = log.size() - 1;
+            long lastLogTerm = lastLogIndex != -1 ? log.get(lastLogIndex).getTerm() : -1;
             requestVoteRequest = RequestVoteRequest.newBuilder()
                     .setTerm(currentTerm.get())
                     .setCandidateId(id)
                     .setLastLogIndex(lastLogIndex)
-                    .setLastLogTerm(lastLogIndex != -1 ? log.get(lastLogIndex).getTerm() : -1)
+                    .setLastLogTerm(lastLogTerm)
                     .build();
         }
         try {
@@ -356,10 +362,20 @@ public class RaftServer implements Identifiable {
                     state = FOLLOWER;
                     currentTerm.set(request.getTerm());
                     leaderAlreadyElected.set(true);
+                    builder.setSuccess(true);
                     LOGGER.debug("Accepted heartbeat RPC from {}. Current state is: {}", request.getLeaderId(), state.toString());
+                } else {
+                    int prevLogIndex = (int) request.getPrevLogIndex();
+                    if (request.getTerm() < myTerm
+                            || prevLogIndex >= log.size()
+                            || log.get(prevLogIndex).getTerm() != request.getPrevLogTerm()) {
+                        builder.setSuccess(false);
+                    } else {
+                        log = Utils.removeConflictingEntries(log, request.getEntriesList());
+                        log = Utils.addMissingEntries(log, request.getEntriesList());
+                    }
                 }
             }
-            builder.setSuccess(request.getTerm() >= myTerm);
             builder.setTerm(myTerm);
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
@@ -383,13 +399,15 @@ public class RaftServer implements Identifiable {
                     builder.setVoteGranted(false);
                     LOGGER.debug("Vote NOT granted to {} because term was lower.", request.getCandidateId());
                 } else if (isNull(votedFor.get())) {
-//                if (request.getLastLogIndex() >= lastLogIndex
-//                        && request.getLastLogTerm() >= lastLogTerm) {
-                    builder.setVoteGranted(true);
-                    votedFor.set(request.getCandidateId());
-                    leaderAlreadyElected.set(true);
-                    LOGGER.debug("Vote granted to {}", request.getCandidateId());
-//                }
+                    if (request.getLastLogTerm() >= lastLogTerm && request.getLastLogIndex() >= lastLogIndex) {
+                        builder.setVoteGranted(true);
+                        votedFor.set(request.getCandidateId());
+                        leaderAlreadyElected.set(true);
+                        LOGGER.debug("Vote granted to {}", request.getCandidateId());
+                    } else {
+                        builder.setVoteGranted(false);
+                        LOGGER.debug("Vote NOT granted to {} because it's log was not up-to-date.", request.getCandidateId());
+                    }
                 } else {
                     builder.setVoteGranted(false);
                     LOGGER.debug("Vote NOT granted to {} because I already voted for {}.", request.getCandidateId(), votedFor.get());
