@@ -28,9 +28,9 @@ public class UtilsUnitTest {
 
         List<com.alex.raft.LogEntry> newEntries = new ArrayList<>(asList(newEntry1, newEntry2, newEntry3, newEntry4));
 
-        List<LogEntry> updated = Utils.addMissingEntries(logEntries, newEntries);
+        logEntries.addAll(Utils.findMissingEntries(logEntries, newEntries));
 
-        Assert.assertEquals(8, updated.size());
+        Assert.assertEquals(8, logEntries.size());
     }
 
     @Test

@@ -372,7 +372,7 @@ public class RaftServer implements Identifiable {
                         builder.setSuccess(false);
                     } else {
                         log = Utils.removeConflictingEntries(log, request.getEntriesList());
-                        log = Utils.addMissingEntries(log, request.getEntriesList());
+                        log.addAll(Utils.findMissingEntries(log, request.getEntriesList()));
                     }
                 }
             }

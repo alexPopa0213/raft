@@ -2,6 +2,7 @@ package com.alex.server.util;
 
 import com.alex.server.model.LogEntry;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static java.util.stream.Collectors.toList;
@@ -10,20 +11,18 @@ public final class Utils {
     private Utils() {
     }
 
-    public static synchronized List<LogEntry> addMissingEntries(List<LogEntry> logEntries, List<com.alex.raft.LogEntry> newEntries) {
+    public static synchronized List<LogEntry> findMissingEntries(List<LogEntry> logEntries, List<com.alex.raft.LogEntry> newEntries) {
         for (com.alex.raft.LogEntry logEntry : newEntries) {
             int indexInLog = logEntry.getIndex();
             int indexInList = newEntries.indexOf(logEntry);
             if (logEntries.size() <= indexInLog) {
-                List<LogEntry> filtered = newEntries.subList(indexInList, logEntries.size() - 1)
+                return newEntries.subList(indexInList, logEntries.size() - 1)
                         .stream()
                         .map(Utils::fromProto)
                         .collect(toList());
-                logEntries.addAll(filtered);
-                break;
             }
         }
-        return logEntries;
+        return new ArrayList<>();
     }
 
 
