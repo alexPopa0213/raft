@@ -8,7 +8,6 @@ import com.alex.server.model.Identifiable;
 import com.alex.server.model.LogEntry;
 import com.alex.server.model.LogEntrySerializer;
 import com.alex.server.model.ServerState;
-import com.alex.server.util.Utils;
 import io.grpc.*;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.Logger;
@@ -26,6 +25,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static com.alex.raft.RaftServiceGrpc.newBlockingStub;
 import static com.alex.server.config.ApplicationProperties.*;
 import static com.alex.server.model.ServerState.*;
+import static com.alex.server.util.Utils.findMissingEntries;
+import static com.alex.server.util.Utils.removeConflictingEntries;
+import static java.lang.Math.min;
+import static java.lang.Math.round;
 import static java.lang.System.currentTimeMillis;
 import static java.lang.System.err;
 import static java.util.Objects.isNull;
@@ -314,7 +317,7 @@ public class RaftServer implements Identifiable {
     }
 
     private boolean hasMajorityOfVotes() {
-        int majority = (int) Math.round(((double) (cluster.size() + 1)) / 2 + 0.5);
+        int majority = (int) round(((double) (cluster.size() + 1)) / 2 + 0.5);
         LOGGER.debug("I received {} votes and the majority is: {}.", receivedVotes + 1, majority);
         return receivedVotes + 1 >= majority;
     }
@@ -365,14 +368,18 @@ public class RaftServer implements Identifiable {
                     builder.setSuccess(true);
                     LOGGER.debug("Accepted heartbeat RPC from {}. Current state is: {}", request.getLeaderId(), state.toString());
                 } else {
-                    int prevLogIndex = (int) request.getPrevLogIndex();
+                    int prevLogIndex = request.getPrevLogIndex();
                     if (request.getTerm() < myTerm
                             || prevLogIndex >= log.size()
                             || log.get(prevLogIndex).getTerm() != request.getPrevLogTerm()) {
                         builder.setSuccess(false);
                     } else {
-                        log = Utils.removeConflictingEntries(log, request.getEntriesList());
-                        log.addAll(Utils.findMissingEntries(log, request.getEntriesList()));
+                        log = removeConflictingEntries(log, request.getEntriesList());
+                        log.addAll(findMissingEntries(log, request.getEntriesList()));
+                        if (request.getLeaderCommitIndex() > commitIndex) {
+                            commitIndex = min(request.getLeaderCommitIndex(), log.get(log.size() - 1).getIndex());
+                        }
+                        builder.setSuccess(true);
                     }
                 }
             }

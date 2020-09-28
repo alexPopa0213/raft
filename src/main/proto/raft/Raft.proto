@@ -27,7 +27,7 @@ message AppendEntriesRequest {
     /*
     index of log entry immediately preceding new ones
         */
-    int64 prevLogIndex = 3;
+    int32 prevLogIndex = 3;
     /*
     term of prevLogIndex entry
         */
@@ -39,7 +39,7 @@ message AppendEntriesRequest {
     /*
     leader’s commitIndex
         */
-    int64 leaderCommitIndex = 6;
+    int32 leaderCommitIndex = 6;
 }
 
 message AppendEntriesReply {
@@ -65,7 +65,7 @@ message RequestVoteRequest {
     /*
       index of candidate’s last log entry
         */
-    int64 lastLogIndex = 3;
+    int32 lastLogIndex = 3;
     /*
     term of candidate’s last log entry
         */
