@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.alex.raft.client";
+
+package raft;
+
+message ClientRequest {
+  repeated string commands = 1 ;
+}
+
+message ClientReply {
+  bool success = 1;
+}

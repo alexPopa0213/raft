@@ -3,6 +3,8 @@ syntax = "proto3";
 option java_multiple_files = true;
 option java_package = "com.alex.raft";
 
+import 'raft/ClientRelated.proto';
+
 package raft;
 
 service RaftService {
@@ -11,6 +13,9 @@ service RaftService {
     }
 
     rpc requestVote (RequestVoteRequest) returns (RequestVoteReply) {
+    }
+
+    rpc sendCommands (ClientRequest) returns (ClientReply) {
     }
 
 }

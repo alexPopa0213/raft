@@ -1,6 +1,8 @@
 package com.alex.server;
 
 import com.alex.raft.*;
+import com.alex.raft.client.ClientReply;
+import com.alex.raft.client.ClientRequest;
 import com.alex.server.heartbeat.udp.HeartbeatClusterRefresherTimerTask;
 import com.alex.server.heartbeat.udp.HeartbeatListenerTimerTask;
 import com.alex.server.heartbeat.udp.HeartbeatPublisherTimerTask;
@@ -354,6 +356,16 @@ public class RaftServer implements Identifiable {
     }
 
     class RaftServiceImpl extends RaftServiceGrpc.RaftServiceImplBase {
+
+        @Override
+        public void sendCommands(ClientRequest request, StreamObserver<ClientReply> responseObserver) {
+            ClientReply.Builder builder = ClientReply.newBuilder();
+            LOGGER.debug("Received commands: {}", request.getCommandsList());
+            builder.setSuccess(true);
+            responseObserver.onNext(builder.build());
+            responseObserver.onCompleted();
+        }
+
         @Override
         public void appendEntries(AppendEntriesRequest request, StreamObserver<AppendEntriesReply> responseObserver) {
             AppendEntriesReply.Builder builder = AppendEntriesReply.newBuilder();
