@@ -10,6 +10,7 @@ import com.alex.server.model.Identifiable;
 import com.alex.server.model.LogEntry;
 import com.alex.server.model.LogEntrySerializer;
 import com.alex.server.model.ServerState;
+import com.google.protobuf.ProtocolStringList;
 import io.grpc.*;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.Logger;
@@ -37,6 +38,8 @@ import static java.util.Objects.isNull;
 import static java.util.Objects.nonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static java.util.stream.Collectors.toConcurrentMap;
+import static java.util.stream.Collectors.toList;
 import static org.apache.logging.log4j.LogManager.getLogger;
 
 public class RaftServer implements Identifiable {
@@ -181,17 +184,23 @@ public class RaftServer implements Identifiable {
                 return;
             }
             leaderAlreadyElected.set(true);
-            //index before appending logs from client
+            //index before appending logs from client *
             int prevLogIndex = log.size() - 1;
             long prevLogTerm = prevLogIndex != -1 ? log.get(prevLogIndex).getTerm() : -1;
-            //append log entries from client, then send request
+            //append log entries from client, then send request *
+            List<LogEntry> entries = new ArrayList<>();
+            int lastLogIndex = log.size() - 1;
+            if (lastLogIndex >= nextIndex.get(port)) {
+                //missing entries
+                entries.addAll(log.subList(nextIndex.get(port), lastLogIndex));
+            }
             appendEntriesRequest = AppendEntriesRequest.newBuilder()
                     .setLeaderId(id)
                     .setTerm(currentTerm.get())
                     .setLeaderCommitIndex(commitIndex)
                     .setPrevLogIndex(prevLogIndex)
                     .setPrevLogTerm(prevLogTerm)
-                    .addAllEntries(new ArrayList<>())
+                    .addAllEntries(toProto(entries))
                     .build();
         }
         try {
@@ -201,6 +210,17 @@ public class RaftServer implements Identifiable {
             if (!appendEntriesReply.getSuccess()) {
                 LOGGER.debug("Heartbeat to server {} failed.", port);
                 checkAndUpdateTerm(appendEntriesReply.getTerm());
+                synchronized (LOCK) {
+                    if (state == LEADER) {
+                        Integer integer = nextIndex.get(port) - 1;
+                        nextIndex.put(port, integer);
+                    }
+                }
+            } else {
+                synchronized (LOCK) {
+                    nextIndex.put(port, log.size());
+                    matchIndex.put(port, log.size() - 1);
+                }
             }
         } catch (StatusRuntimeException sre) {
             LOGGER.warn("RPC failed: {}, {}", sre.getStatus(), sre.getMessage());
@@ -208,6 +228,20 @@ public class RaftServer implements Identifiable {
         } catch (Exception e) {
             LOGGER.error("ERROR calling appendEntries RPC entries", e);
         }
+    }
+
+    private List<com.alex.raft.LogEntry> toProto(List<LogEntry> entries) {
+        return entries.stream()
+                .map(this::buildProtoLogEntry)
+                .collect(toList());
+    }
+
+    private com.alex.raft.LogEntry buildProtoLogEntry(LogEntry entry) {
+        return com.alex.raft.LogEntry.newBuilder()
+                .setTerm(entry.getTerm())
+                .setCommand(entry.getCommand())
+                .setIndex(entry.getIndex())
+                .build();
     }
 
     private void handleElections() {
@@ -252,6 +286,9 @@ public class RaftServer implements Identifiable {
                                 LOGGER.debug("I am now LEADER of term: {}", currentTerm.get());
                                 state = LEADER;
                                 receivedVotes = 0;
+                                int lastLogIndex = log.size() - 1;
+                                nextIndex = cluster.entrySet().stream().collect(toConcurrentMap(Map.Entry::getKey, v -> lastLogIndex + 1));
+                                matchIndex = cluster.entrySet().stream().collect(toConcurrentMap(Map.Entry::getKey, v -> 0));
                             }
                         } else {
                             checkAndUpdateTerm(requestVoteReply.getTerm());
@@ -360,7 +397,16 @@ public class RaftServer implements Identifiable {
         @Override
         public void sendCommands(ClientRequest request, StreamObserver<ClientReply> responseObserver) {
             ClientReply.Builder builder = ClientReply.newBuilder();
-            LOGGER.debug("Received commands: {}", request.getCommandsList());
+            ProtocolStringList commandsList = request.getCommandsList();
+            LOGGER.debug("Received commands: {}", commandsList);
+            synchronized (LOCK) {
+                List<LogEntry> newEntries = commandsList.stream()
+                        .map(cmd -> new LogEntry(currentTerm.get(), cmd, 0))
+                        .collect(toList());
+                newEntries.forEach(logEntry -> logEntry.setIndex(log.indexOf(logEntry)));
+                log.addAll(newEntries);
+            }
+            // should only respond to client after entries are commited/applied to state machine
             builder.setSuccess(true);
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
@@ -381,9 +427,10 @@ public class RaftServer implements Identifiable {
                     LOGGER.debug("Accepted heartbeat RPC from {}. Current state is: {}", request.getLeaderId(), state.toString());
                 } else {
                     int prevLogIndex = request.getPrevLogIndex();
+                    long prevLogTerm = request.getPrevLogTerm();
                     if (request.getTerm() < myTerm
                             || prevLogIndex >= log.size()
-                            || log.get(prevLogIndex).getTerm() != request.getPrevLogTerm()) {
+                            || log.get(prevLogIndex).getTerm() != prevLogTerm) {
                         builder.setSuccess(false);
                     } else {
                         log = removeConflictingEntries(log, request.getEntriesList());
@@ -395,6 +442,7 @@ public class RaftServer implements Identifiable {
                     }
                 }
             }
+            LOGGER.debug("Log is now: {}", log);
             builder.setTerm(myTerm);
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
