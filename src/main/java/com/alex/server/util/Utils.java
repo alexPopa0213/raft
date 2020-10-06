@@ -29,9 +29,11 @@ public final class Utils {
     public static synchronized List<com.alex.server.model.LogEntry> removeConflictingEntries(List<LogEntry> logEntries, List<com.alex.raft.LogEntry> newEntries) {
         for (com.alex.raft.LogEntry entry : newEntries) {
             int idx = entry.getIndex();
-            com.alex.server.model.LogEntry localEntry = logEntries.get(idx);
-            if (localEntry != null && localEntry.getTerm() != entry.getTerm()) {
-                return logEntries.subList(0, idx);
+            if (idx <= logEntries.size() - 1) {
+                com.alex.server.model.LogEntry localEntry = logEntries.get(idx);
+                if (localEntry.getTerm() != entry.getTerm()) {
+                    return logEntries.subList(0, idx);
+                }
             }
         }
         return logEntries;

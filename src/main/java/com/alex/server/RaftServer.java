@@ -189,16 +189,28 @@ public class RaftServer implements Identifiable {
             long prevLogTerm = prevLogIndex != -1 ? log.get(prevLogIndex).getTerm() : -1;
             //append log entries from client, then send request *
             List<LogEntry> entries = new ArrayList<>();
-            int lastLogIndex = log.size() - 1;
+            int lastLogIndex = log.size();
+            if (!nextIndex.containsKey(port)) {
+                // server just joined the cluster
+                int leaderLastLogIndex = log.size() - 1;
+                nextIndex.put(port, leaderLastLogIndex + 1);
+                LOGGER.debug("Server {} is new so his nextIndex is: {}", port, log.size());
+            }
             if (lastLogIndex >= nextIndex.get(port)) {
-                //missing entries
-                entries.addAll(log.subList(nextIndex.get(port), lastLogIndex));
+                if (log.size() == 1) {
+                    entries.addAll(log);
+                } else {
+                    //add missing entries for this server
+                    LOGGER.debug("Sending missing entries. Next Index for Server is: {} and lastLogIndex is: {}",
+                            nextIndex.get(port), lastLogIndex);
+                    entries.addAll(log.subList(nextIndex.get(port), lastLogIndex));
+                }
             }
             appendEntriesRequest = AppendEntriesRequest.newBuilder()
                     .setLeaderId(id)
                     .setTerm(currentTerm.get())
                     .setLeaderCommitIndex(commitIndex)
-                    .setPrevLogIndex(prevLogIndex)
+                    .setPrevLogIndex(0)
                     .setPrevLogTerm(prevLogTerm)
                     .addAllEntries(toProto(entries))
                     .build();
@@ -231,12 +243,14 @@ public class RaftServer implements Identifiable {
     }
 
     private List<com.alex.raft.LogEntry> toProto(List<LogEntry> entries) {
+        //todo move to separate class
         return entries.stream()
                 .map(this::buildProtoLogEntry)
                 .collect(toList());
     }
 
     private com.alex.raft.LogEntry buildProtoLogEntry(LogEntry entry) {
+        //todo move to separate class
         return com.alex.raft.LogEntry.newBuilder()
                 .setTerm(entry.getTerm())
                 .setCommand(entry.getCommand())
@@ -401,10 +415,11 @@ public class RaftServer implements Identifiable {
             LOGGER.debug("Received commands: {}", commandsList);
             synchronized (LOCK) {
                 List<LogEntry> newEntries = commandsList.stream()
-                        .map(cmd -> new LogEntry(currentTerm.get(), cmd, 0))
+                        .map(cmd -> new LogEntry(currentTerm.get(), cmd, 1))
                         .collect(toList());
-                newEntries.forEach(logEntry -> logEntry.setIndex(log.indexOf(logEntry)));
+//                newEntries.forEach(logEntry -> logEntry.setIndex(log.indexOf(logEntry)));
                 log.addAll(newEntries);
+                LOGGER.debug("Log is now: {}", log);
             }
             // should only respond to client after entries are commited/applied to state machine
             builder.setSuccess(true);
@@ -416,21 +431,16 @@ public class RaftServer implements Identifiable {
         public void appendEntries(AppendEntriesRequest request, StreamObserver<AppendEntriesReply> responseObserver) {
             AppendEntriesReply.Builder builder = AppendEntriesReply.newBuilder();
             final long myTerm;
-            LOGGER.debug("Received heartbeat RPC from {}.", request.getLeaderId());
+            LOGGER.debug("Received append entries rpc RPC from {}. Request is: {}.", request.getLeaderId(), request.toString());
+            LOGGER.debug("PrevLogIndex: {}", request.getPrevLogIndex());
             synchronized (LOCK) {
                 myTerm = currentTerm.get();
-                if (isHeartBeat(request) && request.getTerm() >= myTerm) {
-                    state = FOLLOWER;
-                    currentTerm.set(request.getTerm());
-                    leaderAlreadyElected.set(true);
-                    builder.setSuccess(true);
-                    LOGGER.debug("Accepted heartbeat RPC from {}. Current state is: {}", request.getLeaderId(), state.toString());
-                } else {
-                    int prevLogIndex = request.getPrevLogIndex();
-                    long prevLogTerm = request.getPrevLogTerm();
-                    if (request.getTerm() < myTerm
+                int prevLogIndex = request.getPrevLogIndex();
+                long prevLogTerm = request.getPrevLogTerm();
+                if (prevLogIndex != -1 && prevLogTerm != -1L) { // logs not empty
+                    if (!log.isEmpty() && (request.getTerm() < myTerm
                             || prevLogIndex >= log.size()
-                            || log.get(prevLogIndex).getTerm() != prevLogTerm) {
+                            || log.get(prevLogIndex).getTerm() != prevLogTerm)) {
                         builder.setSuccess(false);
                     } else {
                         log = removeConflictingEntries(log, request.getEntriesList());
@@ -440,16 +450,18 @@ public class RaftServer implements Identifiable {
                         }
                         builder.setSuccess(true);
                     }
+                } else {
+                    builder.setSuccess(true);
                 }
+                state = FOLLOWER;
+                currentTerm.set(request.getTerm());
+                leaderAlreadyElected.set(true);
+                LOGGER.debug("Received appendEntries RPC from {}. Current state is: {}", request.getLeaderId(), state.toString());
             }
             LOGGER.debug("Log is now: {}", log);
             builder.setTerm(myTerm);
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
-        }
-
-        private boolean isHeartBeat(AppendEntriesRequest request) {
-            return request.getEntriesCount() == 0;
         }
 
         @Override

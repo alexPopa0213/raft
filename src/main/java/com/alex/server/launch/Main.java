@@ -12,6 +12,11 @@ public class Main {
         server1.start();
         server1.blockUntilShutdown();
 
+//        String dbName = "db_srv1";
+//        DB db = DBMaker.fileDB(dbName).checksumHeaderBypass().closeOnJvmShutdown().make();
+//        IndexTreeList<LogEntry> logEntries = db.indexTreeList("srv1" + "_log", new LogEntrySerializer()).createOrOpen();
+//        logEntries.clear();
+
 
 //        final ExecutorService executorService = newCachedThreadPool();
 //        Timer timer = new Timer(true);

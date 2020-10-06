@@ -19,7 +19,7 @@ public class UtilsUnitTest {
         LogEntry entry3 = new LogEntry(2L, "command3", 2);
         LogEntry entry4 = new LogEntry(3L, "command4", 3);
         LogEntry entry5 = new LogEntry(3L, "command5", 4);
-        List<LogEntry> logEntries = new ArrayList<>(asList(entry1, entry2, entry3, entry4, entry5));
+        List<LogEntry> logEntries = new ArrayList<>();
 
         com.alex.raft.LogEntry newEntry1 = createEntry(3L, "commandX", 4);
         com.alex.raft.LogEntry newEntry2 = createEntry(4L, "commandY", 5);
