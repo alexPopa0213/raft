@@ -6,6 +6,7 @@ import org.junit.Assert;
 import org.junit.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static java.util.Arrays.asList;
@@ -19,7 +20,9 @@ public class UtilsUnitTest {
         LogEntry entry3 = new LogEntry(2L, "command3", 2);
         LogEntry entry4 = new LogEntry(3L, "command4", 3);
         LogEntry entry5 = new LogEntry(3L, "command5", 4);
-        List<LogEntry> logEntries = new ArrayList<>();
+        List<LogEntry> logEntries = new ArrayList<>(
+                Arrays.asList(entry1, entry2, entry3, entry4, entry5)
+        );
 
         com.alex.raft.LogEntry newEntry1 = createEntry(3L, "commandX", 4);
         com.alex.raft.LogEntry newEntry2 = createEntry(4L, "commandY", 5);
@@ -31,6 +34,22 @@ public class UtilsUnitTest {
         logEntries.addAll(Utils.findMissingEntries(logEntries, newEntries));
 
         Assert.assertEquals(8, logEntries.size());
+    }
+
+
+    @Test
+    public void test_add_missing_entries_when_list_is_Empty() {
+        List<LogEntry> logEntries = new ArrayList<>();
+        com.alex.raft.LogEntry newEntry1 = createEntry(3L, "commandX", 4);
+        com.alex.raft.LogEntry newEntry2 = createEntry(4L, "commandY", 5);
+        com.alex.raft.LogEntry newEntry3 = createEntry(4L, "commandZ", 6);
+        com.alex.raft.LogEntry newEntry4 = createEntry(4L, "commandW", 7);
+
+        List<com.alex.raft.LogEntry> newEntries = new ArrayList<>(asList(newEntry1, newEntry2, newEntry3, newEntry4));
+
+        List<LogEntry> missingEntries = Utils.findMissingEntries(logEntries, newEntries);
+
+        Assert.assertEquals(4, missingEntries.size());
     }
 
     @Test

@@ -64,6 +64,7 @@ public class RaftServer implements Identifiable {
     private Atomic.Long currentTerm;
     private Atomic.String votedFor;
     private List<LogEntry> log;
+    private Atomic.Integer prevLogIndex;
 
     /*
     volatile state
@@ -109,6 +110,7 @@ public class RaftServer implements Identifiable {
         log = db.indexTreeList(id + "_log", new LogEntrySerializer()).createOrOpen();
         votedFor = db.atomicString(id + "_votedFor").createOrOpen();
         currentTerm = db.atomicLong(id + "_current_term").createOrOpen();
+        prevLogIndex = db.atomicInteger(id + "prevLogIndex").createOrOpen();
     }
 
     public void start() {
@@ -185,8 +187,8 @@ public class RaftServer implements Identifiable {
             }
             leaderAlreadyElected.set(true);
             //index before appending logs from client *
-            int prevLogIndex = log.size() - 1;
-            long prevLogTerm = prevLogIndex != -1 ? log.get(prevLogIndex).getTerm() : -1;
+            int previousIndex = prevLogIndex.get();
+            long prevLogTerm = log.isEmpty() ? 0 : log.get(previousIndex).getTerm();
             //append log entries from client, then send request *
             List<LogEntry> entries = new ArrayList<>();
             int lastLogIndex = log.size();
@@ -196,21 +198,21 @@ public class RaftServer implements Identifiable {
                 nextIndex.put(port, leaderLastLogIndex + 1);
                 LOGGER.debug("Server {} is new so his nextIndex is: {}", port, log.size());
             }
-            if (lastLogIndex >= nextIndex.get(port)) {
+            if (!log.isEmpty() && lastLogIndex >= nextIndex.get(port)) {
                 if (log.size() == 1) {
                     entries.addAll(log);
                 } else {
                     //add missing entries for this server
                     LOGGER.debug("Sending missing entries. Next Index for Server is: {} and lastLogIndex is: {}",
                             nextIndex.get(port), lastLogIndex);
-                    entries.addAll(log.subList(nextIndex.get(port), lastLogIndex));
+                    entries.addAll(log.subList(nextIndex.get(port) - 1, lastLogIndex));
                 }
             }
             appendEntriesRequest = AppendEntriesRequest.newBuilder()
                     .setLeaderId(id)
                     .setTerm(currentTerm.get())
                     .setLeaderCommitIndex(commitIndex)
-                    .setPrevLogIndex(0)
+                    .setPrevLogIndex(previousIndex)
                     .setPrevLogTerm(prevLogTerm)
                     .addAllEntries(toProto(entries))
                     .build();
@@ -230,7 +232,7 @@ public class RaftServer implements Identifiable {
                 }
             } else {
                 synchronized (LOCK) {
-                    nextIndex.put(port, log.size());
+                    nextIndex.put(port, log.size() + 1);
                     matchIndex.put(port, log.size() - 1);
                 }
             }
@@ -414,11 +416,13 @@ public class RaftServer implements Identifiable {
             ProtocolStringList commandsList = request.getCommandsList();
             LOGGER.debug("Received commands: {}", commandsList);
             synchronized (LOCK) {
-                List<LogEntry> newEntries = commandsList.stream()
-                        .map(cmd -> new LogEntry(currentTerm.get(), cmd, 1))
-                        .collect(toList());
-//                newEntries.forEach(logEntry -> logEntry.setIndex(log.indexOf(logEntry)));
-                log.addAll(newEntries);
+                int index = log.isEmpty() ? 0 : log.get(log.size() - 1).getIndex();
+                prevLogIndex.set(index);
+                LOGGER.debug("PrevLogIndex set to: {}", index);
+                for (String command : commandsList) {
+                    index++;
+                    log.add(new LogEntry(currentTerm.get(), command, index));
+                }
                 LOGGER.debug("Log is now: {}", log);
             }
             // should only respond to client after entries are commited/applied to state machine
@@ -439,9 +443,11 @@ public class RaftServer implements Identifiable {
                 long prevLogTerm = request.getPrevLogTerm();
                 if (prevLogIndex != -1 && prevLogTerm != -1L) { // logs not empty
                     if (!log.isEmpty() && (request.getTerm() < myTerm
-                            || prevLogIndex >= log.size()
-                            || log.get(prevLogIndex).getTerm() != prevLogTerm)) {
+                            || prevLogIndex - 1 >= log.size()
+                            || log.get(prevLogIndex - 1).getTerm() != prevLogTerm)) {
                         builder.setSuccess(false);
+                        LOGGER.debug("PrevLogIndex is {} and my size is {}", prevLogIndex, log.size());
+                        LOGGER.debug("PrevLogTerm is {} and my log term is is {}", prevLogTerm, log.get(prevLogIndex).getTerm());
                     } else {
                         log = removeConflictingEntries(log, request.getEntriesList());
                         log.addAll(findMissingEntries(log, request.getEntriesList()));

@@ -50,6 +50,15 @@ public class LogEntry implements Serializable {
     }
 
     @Override
+    public String toString() {
+        return "LogEntry{" +
+                "term=" + term +
+                ", command='" + command + '\'' +
+                ", index=" + index +
+                '}';
+    }
+
+    @Override
     public int hashCode() {
         return Objects.hash(term, command, index);
     }

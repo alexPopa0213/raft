@@ -12,11 +12,16 @@ public final class Utils {
     }
 
     public static synchronized List<LogEntry> findMissingEntries(List<LogEntry> logEntries, List<com.alex.raft.LogEntry> newEntries) {
+        if (logEntries.isEmpty()) {
+            return newEntries.stream()
+                    .map(Utils::fromProto)
+                    .collect(toList());
+        }
         for (com.alex.raft.LogEntry logEntry : newEntries) {
             int indexInLog = logEntry.getIndex();
             int indexInList = newEntries.indexOf(logEntry);
             if (logEntries.size() <= indexInLog) {
-                return newEntries.subList(indexInList, logEntries.size() - 1)
+                return newEntries.subList(indexInList, indexInLog - 1)
                         .stream()
                         .map(Utils::fromProto)
                         .collect(toList());

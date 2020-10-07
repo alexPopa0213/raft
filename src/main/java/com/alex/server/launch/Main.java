@@ -1,7 +1,14 @@
 package com.alex.server.launch;
 
 import com.alex.server.RaftServer;
+import com.alex.server.model.LogEntry;
+import com.alex.server.model.LogEntrySerializer;
+import org.mapdb.DB;
+import org.mapdb.DBMaker;
+import org.mapdb.IndexTreeList;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.logging.Logger;
 
 public class Main {
@@ -14,9 +21,17 @@ public class Main {
 
 //        String dbName = "db_srv1";
 //        DB db = DBMaker.fileDB(dbName).checksumHeaderBypass().closeOnJvmShutdown().make();
-//        IndexTreeList<LogEntry> logEntries = db.indexTreeList("srv1" + "_log", new LogEntrySerializer()).createOrOpen();
-//        logEntries.clear();
+//        Atomic.Integer test_prevLogIndex = db.atomicInteger("test2_prevLogIndex").createOrOpen();
+//
+//        System.out.println("Value is: " + test_prevLogIndex.get());
 
+//        List<String> serversToClean = Arrays.asList("srv1", "srv2");
+//        for (String server : serversToClean) {
+//            String dbName = "db_" + server;
+//            DB db = DBMaker.fileDB(dbName).checksumHeaderBypass().closeOnJvmShutdown().make();
+//            IndexTreeList<LogEntry> logEntries = db.indexTreeList(server + "_log", new LogEntrySerializer()).createOrOpen();
+//            logEntries.clear();
+//        }
 
 //        final ExecutorService executorService = newCachedThreadPool();
 //        Timer timer = new Timer(true);
