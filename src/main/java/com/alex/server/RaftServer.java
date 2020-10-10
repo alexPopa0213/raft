@@ -108,6 +108,10 @@ public class RaftServer implements Identifiable {
         String dbName = "db_" + id;
         db = DBMaker.fileDB(dbName).checksumHeaderBypass().closeOnJvmShutdown().make();
         log = db.indexTreeList(id + "_log", new LogEntrySerializer()).createOrOpen();
+        if (log.isEmpty()) {
+            //so actual log will start at index = 1
+            log.add(new LogEntry(0L, VOID_VALUE, 0));
+        }
         votedFor = db.atomicString(id + "_votedFor").createOrOpen();
         currentTerm = db.atomicLong(id + "_current_term").createOrOpen();
         prevLogIndex = db.atomicInteger(id + "prevLogIndex").createOrOpen();
@@ -186,27 +190,19 @@ public class RaftServer implements Identifiable {
                 return;
             }
             leaderAlreadyElected.set(true);
-            //index before appending logs from client *
             int previousIndex = prevLogIndex.get();
-            long prevLogTerm = log.isEmpty() ? 0 : log.get(previousIndex).getTerm();
-            //append log entries from client, then send request *
+            long prevLogTerm = log.get(previousIndex).getTerm();
             List<LogEntry> entries = new ArrayList<>();
-            int lastLogIndex = log.size();
+            int lastLogIndex = log.size() - 1;
             if (!nextIndex.containsKey(port)) {
-                // server just joined the cluster
-                int leaderLastLogIndex = log.size() - 1;
-                nextIndex.put(port, leaderLastLogIndex + 1);
+                nextIndex.put(port, lastLogIndex + 1);
                 LOGGER.debug("Server {} is new so his nextIndex is: {}", port, log.size());
             }
-            if (!log.isEmpty() && lastLogIndex >= nextIndex.get(port)) {
-                if (log.size() == 1) {
-                    entries.addAll(log);
-                } else {
-                    //add missing entries for this server
-                    LOGGER.debug("Sending missing entries. Next Index for Server is: {} and lastLogIndex is: {}",
-                            nextIndex.get(port), lastLogIndex);
-                    entries.addAll(log.subList(nextIndex.get(port) - 1, lastLogIndex));
-                }
+            if (lastLogIndex >= nextIndex.get(port)) {
+                LOGGER.debug("Sending missing entries. Next Index for Server is: {} and lastLogIndex is: {}",
+                        nextIndex.get(port), lastLogIndex);
+                LOGGER.debug("Sending missing entries: {}", log.subList(nextIndex.get(port), log.size()));
+                entries.addAll(log.subList(nextIndex.get(port), log.size()));
             }
             appendEntriesRequest = AppendEntriesRequest.newBuilder()
                     .setLeaderId(id)
@@ -232,7 +228,7 @@ public class RaftServer implements Identifiable {
                 }
             } else {
                 synchronized (LOCK) {
-                    nextIndex.put(port, log.size() + 1);
+                    nextIndex.put(port, log.size());
                     matchIndex.put(port, log.size() - 1);
                 }
             }
@@ -245,14 +241,14 @@ public class RaftServer implements Identifiable {
     }
 
     private List<com.alex.raft.LogEntry> toProto(List<LogEntry> entries) {
-        //todo move to separate class
+        //todo move to separate class and add test
         return entries.stream()
                 .map(this::buildProtoLogEntry)
                 .collect(toList());
     }
 
     private com.alex.raft.LogEntry buildProtoLogEntry(LogEntry entry) {
-        //todo move to separate class
+        //todo move to separate class and add test
         return com.alex.raft.LogEntry.newBuilder()
                 .setTerm(entry.getTerm())
                 .setCommand(entry.getCommand())
@@ -323,7 +319,7 @@ public class RaftServer implements Identifiable {
         final RaftServiceGrpc.RaftServiceBlockingStub blockingStub;
         synchronized (LOCK) {
             int lastLogIndex = log.size() - 1;
-            long lastLogTerm = lastLogIndex != -1 ? log.get(lastLogIndex).getTerm() : -1;
+            long lastLogTerm = log.get(lastLogIndex).getTerm();
             requestVoteRequest = RequestVoteRequest.newBuilder()
                     .setTerm(currentTerm.get())
                     .setCandidateId(id)
@@ -416,12 +412,12 @@ public class RaftServer implements Identifiable {
             ProtocolStringList commandsList = request.getCommandsList();
             LOGGER.debug("Received commands: {}", commandsList);
             synchronized (LOCK) {
-                int index = log.isEmpty() ? 0 : log.get(log.size() - 1).getIndex();
+                int index = log.get(log.size() - 1).getIndex();
                 prevLogIndex.set(index);
                 LOGGER.debug("PrevLogIndex set to: {}", index);
                 for (String command : commandsList) {
                     index++;
-                    log.add(new LogEntry(currentTerm.get(), command, index));
+                    log.add(index, new LogEntry(currentTerm.get(), command, index));
                 }
                 LOGGER.debug("Log is now: {}", log);
             }
@@ -441,22 +437,19 @@ public class RaftServer implements Identifiable {
                 myTerm = currentTerm.get();
                 int prevLogIndex = request.getPrevLogIndex();
                 long prevLogTerm = request.getPrevLogTerm();
-                if (prevLogIndex != -1 && prevLogTerm != -1L) { // logs not empty
-                    if (!log.isEmpty() && (request.getTerm() < myTerm
-                            || prevLogIndex - 1 >= log.size()
-                            || log.get(prevLogIndex - 1).getTerm() != prevLogTerm)) {
-                        builder.setSuccess(false);
-                        LOGGER.debug("PrevLogIndex is {} and my size is {}", prevLogIndex, log.size());
-                        LOGGER.debug("PrevLogTerm is {} and my log term is is {}", prevLogTerm, log.get(prevLogIndex).getTerm());
-                    } else {
-                        log = removeConflictingEntries(log, request.getEntriesList());
-                        log.addAll(findMissingEntries(log, request.getEntriesList()));
-                        if (request.getLeaderCommitIndex() > commitIndex) {
-                            commitIndex = min(request.getLeaderCommitIndex(), log.get(log.size() - 1).getIndex());
-                        }
-                        builder.setSuccess(true);
-                    }
+                int lastLogIndex = log.size() - 1;
+                if (request.getTerm() < myTerm
+                        || prevLogIndex > lastLogIndex
+                        || prevLogTerm != log.get(prevLogIndex).getTerm()) {
+                    builder.setSuccess(false);
+                    LOGGER.debug("PrevLogIndex is {} and my size is {}", prevLogIndex, log.size());
+                    LOGGER.debug("PrevLogTerm is {} and my log term is is {}", prevLogTerm, log.get(prevLogIndex).getTerm());
                 } else {
+                    log = removeConflictingEntries(log, request.getEntriesList());
+                    log.addAll(findMissingEntries(log, request.getEntriesList()));
+                    if (request.getLeaderCommitIndex() > commitIndex) {
+                        commitIndex = min(request.getLeaderCommitIndex(), log.get(lastLogIndex).getIndex());
+                    }
                     builder.setSuccess(true);
                 }
                 state = FOLLOWER;

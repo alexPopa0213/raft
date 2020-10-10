@@ -36,7 +36,6 @@ public class UtilsUnitTest {
         Assert.assertEquals(8, logEntries.size());
     }
 
-
     @Test
     public void test_add_missing_entries_when_list_is_Empty() {
         List<LogEntry> logEntries = new ArrayList<>();

@@ -16,7 +16,7 @@ public class ClientApp {
         int port = 50051;
 
         List<String> commands = new ArrayList<>();
-        commands.add("command2");
+        commands.add("command1");
 
         ClientRequest clientRequest = ClientRequest.newBuilder()
                 .addAllCommands(commands)

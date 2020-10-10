@@ -1,2 +1,18 @@
-Log replication:
-prevLogIndex -> maybe change some int64(long) to int32(int) in proto(indexes);
+append entries;
+
+1Log[0, 1]
+2Log[0]
+
+prevLogIndex = 0;
+lastLogIndex = 1;
+
+nextLogIndex for log2 = 1;
+
+(lastLogIndex >= nextLogIndex) {
+        send subList(1, 2); (sublist from nextLogIndex to end of original log)
+    };
+
+after replication:
+1Log[0, 1]
+2Log[0, 1]
+--> set nextLogIndex = log size;

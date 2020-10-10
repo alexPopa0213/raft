@@ -2,6 +2,8 @@ package com.alex.server.config;
 
 public final class ApplicationProperties {
 
+    public static final String VOID_VALUE = "";
+
     private ApplicationProperties() {
     }
 
