@@ -13,7 +13,7 @@ import java.util.List;
 public class Cleanup {
 
     public static void main(String[] args) {
-//       cleanPersistedData();
+       cleanPersistedData();
     }
 
     private static void cleanPersistedData() {

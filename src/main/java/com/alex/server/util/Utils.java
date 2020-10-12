@@ -18,13 +18,9 @@ public final class Utils {
                     .collect(toList());
         }
         for (com.alex.raft.LogEntry logEntry : newEntries) {
-            int indexInLog = logEntry.getIndex();
-            int indexInList = newEntries.indexOf(logEntry);
-            if (logEntries.size() <= indexInLog) {
-                return newEntries.subList(indexInList, indexInLog - 1)
-                        .stream()
-                        .map(Utils::fromProto)
-                        .collect(toList());
+            LogEntry entry = fromProto(logEntry);
+            if (!logEntries.contains(entry)) {
+                logEntries.add(entry);
             }
         }
         return new ArrayList<>();

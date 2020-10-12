@@ -45,8 +45,12 @@ public class LogEntry implements Serializable {
         if (o == null || getClass() != o.getClass()) return false;
         LogEntry logEntry = (LogEntry) o;
         return term == logEntry.term &&
-                index == logEntry.index &&
-                Objects.equals(command, logEntry.command);
+                index == logEntry.index;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(term, index);
     }
 
     @Override
@@ -58,8 +62,4 @@ public class LogEntry implements Serializable {
                 '}';
     }
 
-    @Override
-    public int hashCode() {
-        return Objects.hash(term, command, index);
-    }
 }

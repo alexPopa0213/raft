@@ -417,7 +417,7 @@ public class RaftServer implements Identifiable {
                 LOGGER.debug("PrevLogIndex set to: {}", index);
                 for (String command : commandsList) {
                     index++;
-                    log.add(index, new LogEntry(currentTerm.get(), command, index));
+                    log.add(new LogEntry(currentTerm.get(), command, index));
                 }
                 LOGGER.debug("Log is now: {}", log);
             }
@@ -472,7 +472,7 @@ public class RaftServer implements Identifiable {
                 LOGGER.debug("Current term is: {} and received term is: {}", myTerm, request.getTerm());
                 builder.setTerm(myTerm);
                 int lastLogIndex = log.size() - 1;
-                long lastLogTerm = lastLogIndex != -1 ? log.get(lastLogIndex).getTerm() : -1;
+                long lastLogTerm = log.get(lastLogIndex).getTerm();
                 if (request.getTerm() < myTerm) {
                     builder.setVoteGranted(false);
                     LOGGER.debug("Vote NOT granted to {} because term was lower.", request.getCandidateId());

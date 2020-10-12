@@ -7,6 +7,7 @@ import org.junit.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import static java.util.Arrays.asList;
@@ -34,6 +35,19 @@ public class UtilsUnitTest {
         logEntries.addAll(Utils.findMissingEntries(logEntries, newEntries));
 
         Assert.assertEquals(8, logEntries.size());
+    }
+
+    @Test
+    public void test_add_missing_entries_withOnlyVoidValue() {
+        LogEntry entry1 = new LogEntry(0, "", 0);
+        List<LogEntry> logEntries = new ArrayList<>(Collections.singletonList(entry1));
+        com.alex.raft.LogEntry newEntry1 = createEntry(3L, "commandX", 1);
+        com.alex.raft.LogEntry newEntry2 = createEntry(4L, "commandX", 2);
+
+        List<com.alex.raft.LogEntry> newEntries = new ArrayList<>(Arrays.asList(newEntry1, newEntry2));
+        Utils.findMissingEntries(logEntries, newEntries);
+
+        Assert.assertEquals(3, logEntries.size());
     }
 
     @Test
