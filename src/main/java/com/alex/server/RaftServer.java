@@ -201,8 +201,7 @@ public class RaftServer implements Identifiable {
                 entries.addAll(log.subList(nextIndex.get(port), log.size()));
             }
             int prevLogIndex = nextIndex.get(port) - 1;
-            long prevLogTerm = log.get(prevLogIndex).getTerm();
-            LOGGER.debug("For server {}, PrevLogIndex is: {} and prevLogTerm is {}", port, prevLogIndex, prevLogTerm);
+            long prevLogTerm = prevLogIndex == -1 ? -1 : log.get(prevLogIndex).getTerm();
             appendEntriesRequest = AppendEntriesRequest.newBuilder()
                     .setLeaderId(id)
                     .setTerm(currentTerm.get())
@@ -222,7 +221,6 @@ public class RaftServer implements Identifiable {
                     checkAndUpdateTerm(appendEntriesReply.getTerm());
                     if (state == LEADER) {
                         Integer idx = nextIndex.get(port) - 1;
-                        LOGGER.debug("NextIndex for server {} is now: {}", port, idx);
                         nextIndex.put(port, idx);
                     }
                 } else {
@@ -435,7 +433,7 @@ public class RaftServer implements Identifiable {
                 int lastLogIndex = log.size() - 1;
                 if (request.getTerm() < myTerm
                         || prevLogIndex > lastLogIndex
-                        || prevLogTerm != log.get(prevLogIndex).getTerm()) {
+                        || (prevLogTerm != -1 && prevLogTerm != log.get(prevLogIndex).getTerm())) {
                     builder.setSuccess(false);
                     LOGGER.debug("Denied appendEntries RPC, prevLogIndex is {} and my lastLogIndex {}", prevLogIndex, lastLogIndex);
                 } else {
