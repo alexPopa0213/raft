@@ -224,8 +224,9 @@ public class RaftServer implements Identifiable {
                         nextIndex.put(port, idx);
                     }
                 } else {
-                    nextIndex.put(port, log.size());
-                    matchIndex.put(port, log.size() - 1);
+                    int lastLogIndex = log.size() - 1;
+                    nextIndex.put(port, lastLogIndex + 1);
+                    matchIndex.put(port, lastLogIndex);
                 }
             }
         } catch (StatusRuntimeException sre) {
@@ -414,8 +415,13 @@ public class RaftServer implements Identifiable {
                     log.add(new LogEntry(currentTerm.get(), command, index));
                 }
                 LOGGER.debug("Log is now: {}", log);
+                try {
+                    executorService.execute(RaftServer.this::notifyWhenReplicationIsDone);
+                    LOCK.wait();
+                } catch (InterruptedException e) {
+                    LOGGER.error(e);
+                }
             }
-            // should only respond to client after entries are commited/applied to state machine
             builder.setSuccess(true);
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
@@ -485,6 +491,25 @@ public class RaftServer implements Identifiable {
             }
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
+        }
+    }
+
+    private void notifyWhenReplicationIsDone() {
+        synchronized (LOCK) {
+            if (state == LEADER) {
+                int majority = (int) round(((double) (cluster.size() + 1)) / 2 + 0.5);
+                int lastLogIndex = log.size() - 1;
+                int match = 0;
+                while (match < majority) {
+                    for (Integer server : cluster.keySet()) {
+                        if (matchIndex.get(server) == lastLogIndex) {
+                            match++;
+                        }
+                    }
+                }
+                LOGGER.debug("Data has been replicated on majority of servers.");
+                LOCK.notifyAll();
+            }
         }
     }
 
