@@ -130,6 +130,7 @@ public class RaftServer implements Identifiable {
         enableHeartbeat();
         preventElections();
         handleElections();
+        notifyReplication();
         addShutdownHook();
     }
 
@@ -159,6 +160,36 @@ public class RaftServer implements Identifiable {
             }
         };
         timerQueue.schedule(timerTask, 0, leaderHeartbeatTimeout);
+    }
+
+    private void notifyReplication() {
+        TimerTask timerTask = new TimerTask() {
+            @Override
+            public void run() {
+                notifyWhenReplicationIsDone();
+            }
+        };
+        timerQueue.schedule(timerTask, 0, leaderHeartbeatTimeout);
+    }
+
+    private void notifyWhenReplicationIsDone() {
+        synchronized (LOCK) {
+            if (state == LEADER) {
+                int majority = (int) round(((double) (cluster.size() + 1)) / 2 + 0.5);
+                int lastLogIndex = log.size() - 1;
+                int match = 0;
+                for (Integer server : cluster.keySet()) {
+                    if (matchIndex.containsKey(server) && matchIndex.get(server) == lastLogIndex) {
+                        LOGGER.debug("Data was replicated on server {}.", server);
+                        match++;
+                    }
+                }
+                if (match >= majority) {
+                    LOGGER.debug("Data has been replicated on majority of servers.");
+                    LOCK.notifyAll();
+                }
+            }
+        }
     }
 
     private void sendHeartbeatRPC() {
@@ -416,7 +447,6 @@ public class RaftServer implements Identifiable {
                 }
                 LOGGER.debug("Log is now: {}", log);
                 try {
-                    executorService.execute(RaftServer.this::notifyWhenReplicationIsDone);
                     LOCK.wait();
                 } catch (InterruptedException e) {
                     LOGGER.error(e);
@@ -491,25 +521,6 @@ public class RaftServer implements Identifiable {
             }
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
-        }
-    }
-
-    private void notifyWhenReplicationIsDone() {
-        synchronized (LOCK) {
-            if (state == LEADER) {
-                int majority = (int) round(((double) (cluster.size() + 1)) / 2 + 0.5);
-                int lastLogIndex = log.size() - 1;
-                int match = 0;
-                while (match < majority) {
-                    for (Integer server : cluster.keySet()) {
-                        if (matchIndex.get(server) == lastLogIndex) {
-                            match++;
-                        }
-                    }
-                }
-                LOGGER.debug("Data has been replicated on majority of servers.");
-                LOCK.notifyAll();
-            }
         }
     }
 
