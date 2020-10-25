@@ -10,7 +10,6 @@ import com.alex.server.model.Identifiable;
 import com.alex.server.model.LogEntry;
 import com.alex.server.model.LogEntrySerializer;
 import com.alex.server.model.ServerState;
-import com.alex.server.serdes.ProtoBuilderUtil;
 import com.google.protobuf.ProtocolStringList;
 import io.grpc.*;
 import io.grpc.stub.StreamObserver;
@@ -107,15 +106,15 @@ public class RaftServer implements Identifiable {
 
     private void initPersistentState() {
         //todo: wrap persistent state inside an object
-        String dbName = "db_" + id;
+        String dbName = DB_NAME_PREFIX + id;
         db = DBMaker.fileDB(dbName).checksumHeaderBypass().closeOnJvmShutdown().make();
-        log = db.indexTreeList(id + "_log", new LogEntrySerializer()).createOrOpen();
+        log = db.indexTreeList(id + LOG_NAME_SUFFIX, new LogEntrySerializer()).createOrOpen();
         if (log.isEmpty()) {
             //so actual log will start at index = 1
             log.add(new LogEntry(0L, VOID_VALUE, 0));
         }
-        votedFor = db.atomicString(id + "_votedFor").createOrOpen();
-        currentTerm = db.atomicLong(id + "_current_term").createOrOpen();
+        votedFor = db.atomicString(id + VOTED_FOR_SUFFIX).createOrOpen();
+        currentTerm = db.atomicLong(id + CURRENT_TERM_SUFFIX).createOrOpen();
     }
 
     public void start() {

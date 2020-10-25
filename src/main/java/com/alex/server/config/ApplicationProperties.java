@@ -2,14 +2,10 @@ package com.alex.server.config;
 
 public final class ApplicationProperties {
 
-    public static final String VOID_VALUE = "";
-
     private ApplicationProperties() {
     }
 
-    /*
-        todo: to be replaced with proper configuration
-     */
+    public static final String VOID_VALUE = "";
 
     public static final int ELECTION_TIMER_UPPER_BOUND = 350;
     public static final int ELECTION_TIMER_LOWER_BOUND = 250;
@@ -25,6 +21,10 @@ public final class ApplicationProperties {
 
     public static final int minimumClusterSize = 3;
 
-    //todo: add db properties names
+    // persisted state
+    public static final String DB_NAME_PREFIX = "db_";
+    public static final String LOG_NAME_SUFFIX = "_log";
+    public static final String VOTED_FOR_SUFFIX = "_votedFor";
+    public static final String CURRENT_TERM_SUFFIX = "_current_term";
 
 }
