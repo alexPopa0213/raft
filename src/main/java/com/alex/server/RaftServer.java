@@ -10,6 +10,7 @@ import com.alex.server.model.Identifiable;
 import com.alex.server.model.LogEntry;
 import com.alex.server.model.LogEntrySerializer;
 import com.alex.server.model.ServerState;
+import com.alex.server.serdes.ProtoBuilderUtil;
 import com.google.protobuf.ProtocolStringList;
 import io.grpc.*;
 import io.grpc.stub.StreamObserver;
@@ -28,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static com.alex.raft.RaftServiceGrpc.newBlockingStub;
 import static com.alex.server.config.ApplicationProperties.*;
 import static com.alex.server.model.ServerState.*;
+import static com.alex.server.serdes.ProtoBuilderUtil.toProto;
 import static com.alex.server.util.Utils.findMissingEntries;
 import static com.alex.server.util.Utils.removeConflictingEntries;
 import static java.lang.Integer.valueOf;
@@ -40,7 +42,6 @@ import static java.util.Objects.nonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static java.util.stream.Collectors.toConcurrentMap;
-import static java.util.stream.Collectors.toList;
 import static org.apache.logging.log4j.LogManager.getLogger;
 
 public class RaftServer implements Identifiable {
@@ -266,22 +267,6 @@ public class RaftServer implements Identifiable {
         } catch (Exception e) {
             LOGGER.error("ERROR calling appendEntries RPC entries", e);
         }
-    }
-
-    private List<com.alex.raft.LogEntry> toProto(List<LogEntry> entries) {
-        //todo move to separate class and add test
-        return entries.stream()
-                .map(this::buildProtoLogEntry)
-                .collect(toList());
-    }
-
-    private com.alex.raft.LogEntry buildProtoLogEntry(LogEntry entry) {
-        //todo move to separate class and add test
-        return com.alex.raft.LogEntry.newBuilder()
-                .setTerm(entry.getTerm())
-                .setCommand(entry.getCommand())
-                .setIndex(entry.getIndex())
-                .build();
     }
 
     private void handleElections() {

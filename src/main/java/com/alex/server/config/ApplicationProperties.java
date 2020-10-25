@@ -23,8 +23,6 @@ public final class ApplicationProperties {
     // units in seconds
     public static final int UDP_HEARTBEAT_EXPIRATION_TIME = 5;
 
-
-    //todo: configure servers to use this
     public static final int minimumClusterSize = 3;
 
     //todo: add db properties names

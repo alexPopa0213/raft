@@ -1,4 +1,4 @@
-package com.alex.server.integration;
+package com.alex.server.unit;
 
 import com.alex.server.model.LogEntry;
 import com.alex.server.util.Utils;
