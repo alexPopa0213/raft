@@ -183,10 +183,11 @@ public class RaftServer implements Identifiable {
                 for (Integer server : cluster.keySet()) {
                     if (matchIndex.containsKey(server) && matchIndex.get(server) == lastLogIndex) {
                         match++;
+                        if (match >= majority) {
+                            LOGGER.debug("Data replicated on a majority of servers.");
+                            LOCK.notifyAll();
+                        }
                     }
-                }
-                if (match >= majority) {
-                    LOCK.notifyAll();
                 }
             }
         }
@@ -202,13 +203,13 @@ public class RaftServer implements Identifiable {
             executorService.execute(() -> {
                 long start = currentTimeMillis();
                 LOGGER.trace("Sending heartbeat RPC to: {}", server);
-                sendEmptyAppendEntriesRPC(server);
+                sendAppendEntriesRPC(server);
                 LOGGER.debug("Heartbeat rpc to {} took: {} ms.", server, currentTimeMillis() - start);
             });
         }
     }
 
-    public void sendEmptyAppendEntriesRPC(int server) {
+    public void sendAppendEntriesRPC(int server) {
         final ManagedChannel managedChannel;
         final RaftServiceGrpc.RaftServiceBlockingStub blockingStub;
         AppendEntriesRequest appendEntriesRequest;
