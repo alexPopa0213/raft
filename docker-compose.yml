@@ -1,0 +1,32 @@
+# command parameters: [raft server port, raft server ID, rest monitoring port]
+services:
+  srv1:
+    image: raftt
+    ports:
+      - 50051:50051
+      - 8001:8001
+    command: [ "50051", "srv1", "8001" ]
+  srv2:
+    image: raftt
+    ports:
+      - 50052:50052
+      - 8002:8002
+    command: [ "50052", "srv2", "8002" ]
+  srv3:
+    image: raftt
+    ports:
+      - 50053:50053
+      - 8003:8003
+    command: [ "50053", "srv3", "8003" ]
+  srv4:
+    image: raftt
+    ports:
+      - 50054:50054
+      - 8004:8004
+    command: [ "50054", "srv4", "8004" ]
+  srv5:
+    image: raftt
+    ports:
+      - 50055:50055
+      - 8005:8005
+    command: [ "50055", "srv5", "8005" ]

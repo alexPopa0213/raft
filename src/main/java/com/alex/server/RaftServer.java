@@ -1,6 +1,8 @@
 package com.alex.server;
 
 import com.alex.raft.*;
+import com.alex.raft.client.ClientReply;
+import com.alex.raft.client.ClientRequest;
 import com.alex.server.heartbeat.udp.HeartbeatClusterRefresherTimerTask;
 import com.alex.server.heartbeat.udp.HeartbeatListenerTimerTask;
 import com.alex.server.heartbeat.udp.HeartbeatPublisherTimerTask;
@@ -8,6 +10,9 @@ import com.alex.server.model.Identifiable;
 import com.alex.server.model.LogEntry;
 import com.alex.server.model.LogEntrySerializer;
 import com.alex.server.model.ServerState;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.protobuf.ProtocolStringList;
+import com.sun.net.httpserver.HttpServer;
 import io.grpc.*;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.Logger;
@@ -16,6 +21,10 @@ import org.mapdb.DB;
 import org.mapdb.DBMaker;
 
 import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.sql.Timestamp;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -25,27 +34,38 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static com.alex.raft.RaftServiceGrpc.newBlockingStub;
 import static com.alex.server.config.ApplicationProperties.*;
 import static com.alex.server.model.ServerState.*;
+import static com.alex.server.serdes.ProtoBuilderUtil.toProto;
+import static com.alex.server.util.Utils.findMissingEntries;
+import static com.alex.server.util.Utils.removeConflictingEntries;
+import static com.google.common.net.HttpHeaders.CONTENT_TYPE;
+import static java.lang.Math.min;
+import static java.lang.Math.round;
 import static java.lang.System.currentTimeMillis;
 import static java.lang.System.err;
 import static java.util.Objects.isNull;
 import static java.util.Objects.nonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static java.util.stream.Collectors.toConcurrentMap;
 import static org.apache.logging.log4j.LogManager.getLogger;
 
 public class RaftServer implements Identifiable {
     private static final Logger LOGGER = getLogger(RaftServer.class);
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
     private ServerState state;
 
+    private final String address;
     private final int port;
+    private final int rest_port;
     private final String id;
     private Server server;
 
-    private final Map<Integer, Timestamp> cluster = new ConcurrentHashMap<>();
+    private final Map<String, Timestamp> cluster = new ConcurrentHashMap<>();
 
-    private final Map<Integer, ManagedChannel> managedChannelMap = new ConcurrentHashMap<>();
-    private final Map<Integer, RaftServiceGrpc.RaftServiceBlockingStub> stubs = new ConcurrentHashMap<>();
+    private final Map<String, ManagedChannel> managedChannelMap = new ConcurrentHashMap<>();
+    private final Map<String, RaftServiceGrpc.RaftServiceBlockingStub> stubs = new ConcurrentHashMap<>();
 
     private DB db;
 
@@ -61,6 +81,7 @@ public class RaftServer implements Identifiable {
      */
     private int commitIndex = 0;
     private int lastApplied = 0;
+    private String leaderId;
 
     private int receivedVotes = 0;
 
@@ -80,13 +101,24 @@ public class RaftServer implements Identifiable {
 
     private final Object LOCK = new Object();
 
-    public RaftServer(int port, String id) {
+    public RaftServer(int port, int rest_port, String id) {
         this.port = port;
+        this.rest_port = rest_port;
         this.id = id;
         initPersistentState();
         state = FOLLOWER;
         electionTimeOut = generateRandomElectionTimeout();
         leaderHeartbeatTimeout = electionTimeOut / LEADER_HEARTBEAT_SPLIT;
+        address = getAddress() + ':' + port;
+    }
+
+    private String getAddress() {
+        try {
+            return InetAddress.getLocalHost().getHostAddress();
+        } catch (UnknownHostException e) {
+            LOGGER.error("Could not retrieve address. Falling back to localhost.");
+        }
+        return "localhost";
     }
 
     private int generateRandomElectionTimeout() {
@@ -95,11 +127,15 @@ public class RaftServer implements Identifiable {
 
     private void initPersistentState() {
         //todo: wrap persistent state inside an object
-        String dbName = "db_" + id;
+        String dbName = DB_NAME_PREFIX + id;
         db = DBMaker.fileDB(dbName).checksumHeaderBypass().closeOnJvmShutdown().make();
-        log = db.indexTreeList(id + "_log", new LogEntrySerializer()).createOrOpen();
-        votedFor = db.atomicString(id + "_votedFor").createOrOpen();
-        currentTerm = db.atomicLong(id + "_current_term").createOrOpen();
+        log = db.indexTreeList(id + LOG_NAME_SUFFIX, new LogEntrySerializer()).createOrOpen();
+        if (log.isEmpty()) {
+            //so actual log will start at index = 1
+            log.add(new LogEntry(0L, VOID_VALUE, 0));
+        }
+        votedFor = db.atomicString(id + VOTED_FOR_SUFFIX).createOrOpen();
+        currentTerm = db.atomicLong(id + CURRENT_TERM_SUFFIX).createOrOpen();
     }
 
     public void start() {
@@ -112,12 +148,44 @@ public class RaftServer implements Identifiable {
             LOGGER.error("Server could not be started", ex);
             return;
         }
-        LOGGER.info("Server {} started on port {}", id, port);
+        LOGGER.info("Server {} started at: {}", id, address);
         LOGGER.info("Election timeout randomly chosen: {}", electionTimeOut);
         enableHeartbeat();
         preventElections();
         handleElections();
+        notifyReplication();
+        enableRestEntriesEndpoint();
         addShutdownHook();
+    }
+
+    private void enableRestEntriesEndpoint() {
+        HttpServer server;
+        try {
+            server = HttpServer.create(new InetSocketAddress(rest_port), 0);
+            server.createContext("/api/entries", (httpHandler -> {
+
+                if (httpHandler.getRequestMethod().equals("GET")) {
+                    List<LogEntry> entries;
+                    synchronized (LOCK) {
+                        entries = new ArrayList<>(log);
+                    }
+                    httpHandler.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+                    httpHandler.getResponseHeaders().add(CONTENT_TYPE, "application/json");
+                    httpHandler.sendResponseHeaders(200, 0);
+                    OutputStream output = httpHandler.getResponseBody();
+                    output.write(OBJECT_MAPPER.writeValueAsBytes(entries));
+                    output.flush();
+                } else {
+                    httpHandler.sendResponseHeaders(405, -1);
+                }
+                httpHandler.close();
+            }));
+            // todo: check this null
+            server.setExecutor(null); // creates a default executor
+            server.start();
+        } catch (IOException e) {
+            LOGGER.warn("Error enabling monitoring REST endpoint");
+        }
     }
 
     private void enableHeartbeat() {
@@ -127,11 +195,11 @@ public class RaftServer implements Identifiable {
     }
 
     private void listenHeartbeats() {
-        timerQueue.schedule(new HeartbeatListenerTimerTask(cluster, port), 0, LISTEN_UDP_HEARTBEATS_INTERVAL);
+        timerQueue.schedule(new HeartbeatListenerTimerTask(cluster, address), 0, LISTEN_UDP_HEARTBEATS_INTERVAL);
     }
 
     private void sendHeartbeats() {
-        timerQueue.schedule(new HeartbeatPublisherTimerTask(port), 0, SEND_UDP_HEARTBEATS_INTERVAL);
+        timerQueue.schedule(new HeartbeatPublisherTimerTask(address), 0, SEND_UDP_HEARTBEATS_INTERVAL);
     }
 
     private void refreshCluster() {
@@ -148,23 +216,52 @@ public class RaftServer implements Identifiable {
         timerQueue.schedule(timerTask, 0, leaderHeartbeatTimeout);
     }
 
+    private void notifyReplication() {
+        TimerTask timerTask = new TimerTask() {
+            @Override
+            public void run() {
+                notifyWhenReplicationIsDone();
+            }
+        };
+        timerQueue.schedule(timerTask, 0, leaderHeartbeatTimeout);
+    }
+
+    private void notifyWhenReplicationIsDone() {
+        synchronized (LOCK) {
+            if (state == LEADER) {
+                int majority = (int) round(((double) (cluster.size() + 1)) / 2 + 0.5);
+                int lastLogIndex = log.size() - 1;
+                int match = 0;
+                for (String server : cluster.keySet()) {
+                    if (matchIndex.containsKey(server) && matchIndex.get(server) == lastLogIndex) {
+                        match++;
+                        if (match >= majority) {
+                            LOGGER.debug("Data replicated on a majority of servers.");
+                            LOCK.notifyAll();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private void sendHeartbeatRPC() {
         synchronized (LOCK) {
             if (state != LEADER) {
                 return;
             }
         }
-        for (final Integer server : cluster.keySet()) {
+        for (final String server : cluster.keySet()) {
             executorService.execute(() -> {
                 long start = currentTimeMillis();
                 LOGGER.trace("Sending heartbeat RPC to: {}", server);
-                sendEmptyAppendEntriesRPC(server);
+                sendAppendEntriesRPC(server);
                 LOGGER.debug("Heartbeat rpc to {} took: {} ms.", server, currentTimeMillis() - start);
             });
         }
     }
 
-    public void sendEmptyAppendEntriesRPC(int port) {
+    public void sendAppendEntriesRPC(String server) {
         final ManagedChannel managedChannel;
         final RaftServiceGrpc.RaftServiceBlockingStub blockingStub;
         AppendEntriesRequest appendEntriesRequest;
@@ -175,26 +272,50 @@ public class RaftServer implements Identifiable {
                 return;
             }
             leaderAlreadyElected.set(true);
+            List<LogEntry> entries = new ArrayList<>();
+            int lastLogIndex = log.size() - 1;
+            if (!nextIndex.containsKey(server)) {
+                nextIndex.put(server, lastLogIndex + 1);
+                LOGGER.debug("Server {} is new so his nextIndex is: {}", server, log.size());
+            }
+            if (lastLogIndex >= nextIndex.get(server)) {
+                LOGGER.debug("Sending missing entries. Next Index for Server _{} is: {} and lastLogIndex is: {}",
+                        server, nextIndex.get(server), lastLogIndex);
+                LOGGER.debug("Sending missing entries: {}", log.subList(nextIndex.get(server), log.size()));
+                entries.addAll(log.subList(nextIndex.get(server), log.size()));
+            }
+            int prevLogIndex = nextIndex.get(server) - 1;
+            long prevLogTerm = prevLogIndex == -1 ? -1 : log.get(prevLogIndex).getTerm();
             appendEntriesRequest = AppendEntriesRequest.newBuilder()
-                    .setLeaderId(id)
+                    .setLeaderId(address)
                     .setTerm(currentTerm.get())
                     .setLeaderCommitIndex(commitIndex)
-                    .setPrevLogIndex(0L)
-                    .setPrevLogTerm(0L)
-                    .addAllEntries(new ArrayList<>())
+                    .setPrevLogIndex(prevLogIndex)
+                    .setPrevLogTerm(prevLogTerm)
+                    .addAllEntries(toProto(entries))
                     .build();
         }
         try {
-            managedChannel = managedChannelMap.computeIfAbsent(port, this::buildChannel);
-            blockingStub = stubs.computeIfAbsent(port, integer -> newBlockingStub(managedChannel));
+            managedChannel = managedChannelMap.computeIfAbsent(server, this::buildChannel);
+            blockingStub = stubs.computeIfAbsent(server, integer -> newBlockingStub(managedChannel));
             AppendEntriesReply appendEntriesReply = blockingStub.appendEntries(appendEntriesRequest);
-            if (!appendEntriesReply.getSuccess()) {
-                LOGGER.debug("Heartbeat to server {} failed.", port);
-                checkAndUpdateTerm(appendEntriesReply.getTerm());
+            synchronized (LOCK) {
+                if (!appendEntriesReply.getSuccess()) {
+                    LOGGER.debug("Heartbeat to server {} failed.", server);
+                    checkAndUpdateTerm(appendEntriesReply.getTerm());
+                    if (state == LEADER) {
+                        Integer idx = nextIndex.get(server) - 1;
+                        nextIndex.put(server, idx);
+                    }
+                } else {
+                    int lastLogIndex = log.size() - 1;
+                    nextIndex.put(server, lastLogIndex + 1);
+                    matchIndex.put(server, lastLogIndex);
+                }
             }
         } catch (StatusRuntimeException sre) {
             LOGGER.warn("RPC failed: {}, {}", sre.getStatus(), sre.getMessage());
-            removeServerIfUnavailable(sre.getStatus(), port);
+            removeServerIfUnavailable(sre.getStatus(), server);
         } catch (Exception e) {
             LOGGER.error("ERROR calling appendEntries RPC entries", e);
         }
@@ -224,66 +345,76 @@ public class RaftServer implements Identifiable {
             receivedVotes = 0;
         }
 
-        for (final Integer server : cluster.keySet()) {
-            executorService.execute(() -> {
-                synchronized (LOCK) {
-                    if (state != CANDIDATE) {
-                        return;
-                    }
-                }
-                LOGGER.debug("Sending RequestVoteRpc to:" + server);
-                RequestVoteReply requestVoteReply = requestVote(server);
-                synchronized (LOCK) {
-                    if (nonNull(requestVoteReply)) {
-                        if (requestVoteReply.getVoteGranted()) {
-                            LOGGER.debug("Received vote from: {}", server);
-                            receivedVotes += 1;
-                            if (hasMajorityOfVotes()) {
-                                LOGGER.debug("I am now LEADER of term: {}", currentTerm.get());
-                                state = LEADER;
-                                receivedVotes = 0;
-                            }
-                        } else {
-                            checkAndUpdateTerm(requestVoteReply.getTerm());
-                            leaderAlreadyElected.set(true);
-                        }
-                    }
-                }
-            });
+        for (final String address : cluster.keySet()) {
+            executorService.execute(() -> sendRequestVoteRPC(address));
         }
     }
 
-    public RequestVoteReply requestVote(Integer port) {
+    private void sendRequestVoteRPC(String address) {
+        synchronized (LOCK) {
+            if (state != CANDIDATE) {
+                return;
+            }
+        }
+        LOGGER.debug("Sending RequestVoteRpc to:" + address);
+        RequestVoteReply requestVoteReply = requestVote(address);
+        synchronized (LOCK) {
+            if (nonNull(requestVoteReply)) {
+                if (requestVoteReply.getVoteGranted()) {
+                    LOGGER.debug("Received vote from: {}", address);
+                    receivedVotes += 1;
+                    if (cluster.size() + 1 >= minimumClusterSize) {
+                        if (hasMajorityOfVotes() && cluster.size() + 1 >= minimumClusterSize) {
+                            LOGGER.debug("I am now LEADER of term: {}", currentTerm.get());
+                            state = LEADER;
+                            receivedVotes = 0;
+                            int lastLogIndex = log.size() - 1;
+                            nextIndex = cluster.entrySet().stream().collect(toConcurrentMap(Map.Entry::getKey, v -> lastLogIndex + 1));
+                            matchIndex = cluster.entrySet().stream().collect(toConcurrentMap(Map.Entry::getKey, v -> 0));
+                        }
+                    } else {
+                        LOGGER.debug("Cluster does not have the minimum size: {}", minimumClusterSize);
+                    }
+                } else {
+                    checkAndUpdateTerm(requestVoteReply.getTerm());
+                    leaderAlreadyElected.set(true);
+                }
+            }
+        }
+    }
+
+    public RequestVoteReply requestVote(String address) {
         RequestVoteRequest requestVoteRequest;
         RequestVoteReply requestVoteReply = null;
         final ManagedChannel managedChannel;
         final RaftServiceGrpc.RaftServiceBlockingStub blockingStub;
         synchronized (LOCK) {
             int lastLogIndex = log.size() - 1;
+            long lastLogTerm = log.get(lastLogIndex).getTerm();
             requestVoteRequest = RequestVoteRequest.newBuilder()
                     .setTerm(currentTerm.get())
                     .setCandidateId(id)
                     .setLastLogIndex(lastLogIndex)
-                    .setLastLogTerm(lastLogIndex != -1 ? log.get(lastLogIndex).getTerm() : -1)
+                    .setLastLogTerm(lastLogTerm)
                     .build();
         }
         try {
-            managedChannel = managedChannelMap.computeIfAbsent(port, this::buildChannel);
-            blockingStub = stubs.computeIfAbsent(port, integer -> newBlockingStub(managedChannel));
+            managedChannel = managedChannelMap.computeIfAbsent(address, this::buildChannel);
+            blockingStub = stubs.computeIfAbsent(address, integer -> newBlockingStub(managedChannel));
             requestVoteReply = blockingStub.requestVote(requestVoteRequest);
         } catch (StatusRuntimeException sre) {
             LOGGER.warn("RPC failed: {}, {}", sre.getStatus(), sre.getMessage());
-            removeServerIfUnavailable(sre.getStatus(), port);
+            removeServerIfUnavailable(sre.getStatus(), address);
         }
         return requestVoteReply;
     }
 
-    private ManagedChannel buildChannel(Integer port) {
-        ManagedChannel managedChannel = ManagedChannelBuilder.forAddress("127.0.0.1", port)
+    private ManagedChannel buildChannel(String address) {
+        ManagedChannel managedChannel = ManagedChannelBuilder.forTarget(address)
                 .executor(executorService)
                 .usePlaintext()
                 .build();
-        LOGGER.debug("Created managedChannel for port {}.", port);
+        LOGGER.debug("Created managedChannel for address {}.", address);
         return managedChannel;
     }
 
@@ -299,16 +430,16 @@ public class RaftServer implements Identifiable {
         }
     }
 
-    private void removeServerIfUnavailable(Status status, Integer port) {
+    private void removeServerIfUnavailable(Status status, String address) {
         if (status.getCode().equals(Status.Code.UNAVAILABLE)) { //maybe retry first?
-            cluster.remove(port);
-            managedChannelMap.remove(port);
-            stubs.remove(port);
+            cluster.remove(address);
+            managedChannelMap.remove(address);
+            stubs.remove(address);
         }
     }
 
     private boolean hasMajorityOfVotes() {
-        int majority = (int) Math.round(((double) (cluster.size() + 1)) / 2 + 0.5);
+        int majority = (int) round(((double) (cluster.size() + 1)) / 2 + 0.5);
         LOGGER.debug("I received {} votes and the majority is: {}.", receivedVotes + 1, majority);
         return receivedVotes + 1 >= majority;
     }
@@ -339,34 +470,95 @@ public class RaftServer implements Identifiable {
         }));
     }
 
+    public List<LogEntry> getLog() {
+        return log;
+    }
+
     @Override
     public String getId() {
         return id;
     }
 
     class RaftServiceImpl extends RaftServiceGrpc.RaftServiceImplBase {
+
         @Override
-        public void appendEntries(AppendEntriesRequest request, StreamObserver<AppendEntriesReply> responseObserver) {
-            AppendEntriesReply.Builder builder = AppendEntriesReply.newBuilder();
-            final long myTerm;
-            LOGGER.debug("Received heartbeat RPC from {}.", request.getLeaderId());
+        public void sendCommands(ClientRequest request, StreamObserver<ClientReply> responseObserver) {
+            ClientReply.Builder builder = ClientReply.newBuilder();
+            ProtocolStringList commandsList = request.getCommandsList();
+            LOGGER.debug("Received commands: {}", commandsList);
+            boolean success = false;
+            boolean shouldRedirect;
             synchronized (LOCK) {
-                myTerm = currentTerm.get();
-                if (isHeartBeat(request) && request.getTerm() >= myTerm) {
-                    state = FOLLOWER;
-                    currentTerm.set(request.getTerm());
-                    leaderAlreadyElected.set(true);
-                    LOGGER.debug("Accepted heartbeat RPC from {}. Current state is: {}", request.getLeaderId(), state.toString());
+                shouldRedirect = state != LEADER && leaderId != null;
+            }
+            if (shouldRedirect) {
+                LOGGER.debug("Redirecting request to leader {}", leaderId);
+                ClientRequest clientRequest = ClientRequest.newBuilder()
+                        .addAllCommands(commandsList)
+                        .build();
+                ClientReply clientReply = stubs.get(leaderId).sendCommands(clientRequest);
+                success = clientReply.getSuccess();
+            } else {
+                if (cluster.size() + 1 >= minimumClusterSize) {
+                    synchronized (LOCK) {
+                        if (state == LEADER) {
+                            int index = log.get(log.size() - 1).getIndex();
+                            for (String command : commandsList) {
+                                index++;
+                                log.add(new LogEntry(currentTerm.get(), command, index));
+                            }
+                            LOGGER.debug("Log is now: {}", log);
+                            try {
+                                LOCK.wait();
+                                success = true;
+                            } catch (InterruptedException e) {
+                                LOGGER.error(e);
+                            }
+                        }
+                    }
+                } else {
+                    LOGGER.debug("Cluster does not have the minimum size: {}", minimumClusterSize);
+                    LOGGER.debug("Client request declined.");
                 }
             }
-            builder.setSuccess(request.getTerm() >= myTerm);
-            builder.setTerm(myTerm);
+            builder.setSuccess(success);
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
         }
 
-        private boolean isHeartBeat(AppendEntriesRequest request) {
-            return request.getEntriesCount() == 0;
+        @Override
+        public void appendEntries(AppendEntriesRequest request, StreamObserver<AppendEntriesReply> responseObserver) {
+            AppendEntriesReply.Builder builder = AppendEntriesReply.newBuilder();
+            final long myTerm;
+            LOGGER.debug("Received append entries rpc RPC from {}. Request is: {}.", request.getLeaderId(), request.toString());
+            synchronized (LOCK) {
+                myTerm = currentTerm.get();
+                int prevLogIndex = request.getPrevLogIndex();
+                long prevLogTerm = request.getPrevLogTerm();
+                int lastLogIndex = log.size() - 1;
+                if (request.getTerm() < myTerm
+                        || prevLogIndex > lastLogIndex
+                        || (prevLogTerm != -1 && prevLogTerm != log.get(prevLogIndex).getTerm())) {
+                    builder.setSuccess(false);
+                    LOGGER.debug("Denied appendEntries RPC, prevLogIndex is {} and my lastLogIndex {}", prevLogIndex, lastLogIndex);
+                } else {
+                    log = removeConflictingEntries(log, request.getEntriesList());
+                    log.addAll(findMissingEntries(log, request.getEntriesList()));
+                    if (request.getLeaderCommitIndex() > commitIndex) {
+                        commitIndex = min(request.getLeaderCommitIndex(), log.get(lastLogIndex).getIndex());
+                    }
+                    builder.setSuccess(true);
+                }
+                state = FOLLOWER;
+                currentTerm.set(request.getTerm());
+                leaderAlreadyElected.set(true);
+                leaderId = request.getLeaderId();
+                LOGGER.debug("Received appendEntries RPC from {}. Current state is: {}", request.getLeaderId(), state.toString());
+            }
+            LOGGER.debug("Log is now: {}", log);
+            builder.setTerm(myTerm);
+            responseObserver.onNext(builder.build());
+            responseObserver.onCompleted();
         }
 
         @Override
@@ -378,18 +570,20 @@ public class RaftServer implements Identifiable {
                 LOGGER.debug("Current term is: {} and received term is: {}", myTerm, request.getTerm());
                 builder.setTerm(myTerm);
                 int lastLogIndex = log.size() - 1;
-                long lastLogTerm = lastLogIndex != -1 ? log.get(lastLogIndex).getTerm() : -1;
+                long lastLogTerm = log.get(lastLogIndex).getTerm();
                 if (request.getTerm() < myTerm) {
                     builder.setVoteGranted(false);
                     LOGGER.debug("Vote NOT granted to {} because term was lower.", request.getCandidateId());
                 } else if (isNull(votedFor.get())) {
-//                if (request.getLastLogIndex() >= lastLogIndex
-//                        && request.getLastLogTerm() >= lastLogTerm) {
-                    builder.setVoteGranted(true);
-                    votedFor.set(request.getCandidateId());
-                    leaderAlreadyElected.set(true);
-                    LOGGER.debug("Vote granted to {}", request.getCandidateId());
-//                }
+                    if (request.getLastLogTerm() >= lastLogTerm && request.getLastLogIndex() >= lastLogIndex) {
+                        builder.setVoteGranted(true);
+                        votedFor.set(request.getCandidateId());
+                        leaderAlreadyElected.set(true);
+                        LOGGER.debug("Vote granted to {}", request.getCandidateId());
+                    } else {
+                        builder.setVoteGranted(false);
+                        LOGGER.debug("Vote NOT granted to {} because it's log was not up-to-date.", request.getCandidateId());
+                    }
                 } else {
                     builder.setVoteGranted(false);
                     LOGGER.debug("Vote NOT granted to {} because I already voted for {}.", request.getCandidateId(), votedFor.get());

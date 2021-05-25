@@ -17,10 +17,10 @@ public class HeartbeatPublisherTimerTask extends TimerTask {
     private InetAddress group = null;
     private byte[] buf;
 
-    private final Integer port;
+    private final String address;
 
-    public HeartbeatPublisherTimerTask(Integer port) {
-        this.port = port;
+    public HeartbeatPublisherTimerTask(String address) {
+        this.address = address;
         initSocket();
         addShutdownHook();
     }
@@ -39,7 +39,7 @@ public class HeartbeatPublisherTimerTask extends TimerTask {
         try {
             socket = new DatagramSocket();
             group = InetAddress.getByName("230.0.0.0");
-            buf = port.toString().getBytes();
+            buf = address.getBytes();
         } catch (SocketException | UnknownHostException ex) {
             LOGGER.error(ex.getMessage(), ex);
         }
