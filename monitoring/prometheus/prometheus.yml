@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: 'prometh'
+    metrics_path: '/metrics/prometheus'
+    scrape_interval: 1s
+    static_configs:
+      - targets: [ '192.168.0.105:7001', '192.168.0.105:7002', '192.168.0.105:7003', '192.168.0.105:7004', '192.168.0.105:7005' ]

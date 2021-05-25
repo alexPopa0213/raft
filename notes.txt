@@ -16,3 +16,56 @@ after replication:
 1Log[0, 1]
 2Log[0, 1]
 --> set nextLogIndex = log size;
+
+172.20.0.2
+
+172.20.0.3
+
+todo:
+replace log4j with sjf4j
+
+react app:
+-- show last n entries only; something like ... then latest entries
+-- put server ports inside a resource file
+
+docker run -p 50051:50051 raftt 50051 srv1
+ea - enable assertions
+
+docker build -t prometh .
+docker run -p 9090:9090 prometh
+
+https://micrometer.io/docs/registry/prometheus
+https://stackabuse.com/monitoring-spring-boot-apps-with-micrometer-prometheus-and-grafana/
+https://wkrzywiec.medium.com/how-to-put-your-java-application-into-docker-container-5e0a02acdd6b
+https://www.whitesourcesoftware.com/free-developer-tools/blog/docker-expose-port/
+
+
+export JAVA_HOME=`/usr/libexec/java_home -v 11`
+
+private static void registerMonitoringEndpoint(int port, RaftServer raftServer) {
+        PrometheusMeterRegistry prometheusMeterRegistry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+//        List<String> list = new ArrayList<>();
+        try {
+            HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+            server.createContext(MONITORING_ENDPOINT, httpExchange -> {
+//                Gauge.builder("cache.size", list, List::size)
+//                        .register(prometheusMeterRegistry);
+
+                Gauge.builder("log.size", raftServer, srv -> srv.getLog().size())
+//                        .tag("entries", raftServer.getLog().toString())
+                        .description("replicated entries")
+                        .register(prometheusMeterRegistry);
+
+                String response = prometheusMeterRegistry.scrape();
+                httpExchange.sendResponseHeaders(200, response.getBytes().length);
+                try (OutputStream os = httpExchange.getResponseBody()) {
+                    os.write(response.getBytes());
+                }
+            });
+            new Thread(server::start).start();
+        } catch (IOException ioException) {
+            LOGGER.error("Could not register prometheus monitoring endpoint!", ioException);
+            throw new RuntimeException("Could not register prometheus monitoring endpoint!");
+        }
+        LOGGER.info("Monitoring endpoint successfully registered to {}", MONITORING_ENDPOINT);
+    }

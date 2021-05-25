@@ -16,12 +16,12 @@ import static org.junit.Assert.assertTrue;
 
 public class UDPHeartbeatIntegrationTest {
 
-    private static final int port1 = 40001;
-    private static final int port2 = 40002;
-    private static final int port3 = 40003;
-    private static final int port4 = 40004;
+    private static final String address1 = "40001";
+    private static final String address2 = "40002";
+    private static final String address3 = "40003";
+    private static final String address4 = "40004";
 
-    private final Map<Integer, Timestamp> cluster = new ConcurrentHashMap<>();
+    private final Map<String, Timestamp> cluster = new ConcurrentHashMap<>();
 
     @Before
     public void prepare() {
@@ -30,11 +30,11 @@ public class UDPHeartbeatIntegrationTest {
 
     @Test
     public void test_multicast_heartbeat() {
-        HeartbeatPublisherTimerTask heartbeatPublisherTimerTask1 = new HeartbeatPublisherTimerTask(port4);
-        HeartbeatPublisherTimerTask heartbeatPublisherTimerTask2 = new HeartbeatPublisherTimerTask(port2);
-        HeartbeatPublisherTimerTask heartbeatPublisherTimerTask3 = new HeartbeatPublisherTimerTask(port3);
+        HeartbeatPublisherTimerTask heartbeatPublisherTimerTask1 = new HeartbeatPublisherTimerTask(address2);
+        HeartbeatPublisherTimerTask heartbeatPublisherTimerTask2 = new HeartbeatPublisherTimerTask(address3);
+        HeartbeatPublisherTimerTask heartbeatPublisherTimerTask3 = new HeartbeatPublisherTimerTask(address4);
 
-        HeartbeatListenerTimerTask heartbeatListenerTimerTask1 = new HeartbeatListenerTimerTask(cluster, port1);
+        HeartbeatListenerTimerTask heartbeatListenerTimerTask1 = new HeartbeatListenerTimerTask(cluster, address1);
 
         while (cluster.size() < 3) {
             heartbeatListenerTimerTask1.run();
@@ -44,7 +44,7 @@ public class UDPHeartbeatIntegrationTest {
         }
 
         assertEquals(3, cluster.keySet().size());
-        assertTrue(cluster.keySet().containsAll(asList(port4, port2, port3)));
+        assertTrue(cluster.keySet().containsAll(asList(address4, address3, address2)));
     }
 
     @Test

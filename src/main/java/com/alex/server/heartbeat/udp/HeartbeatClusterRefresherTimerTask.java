@@ -15,9 +15,9 @@ public class HeartbeatClusterRefresherTimerTask extends TimerTask {
 
     private static final Logger LOGGER = getLogger(HeartbeatClusterRefresherTimerTask.class);
 
-    private final Map<Integer, Timestamp> cluster;
+    private final Map<String, Timestamp> cluster;
 
-    public HeartbeatClusterRefresherTimerTask(Map<Integer, Timestamp> cluster) {
+    public HeartbeatClusterRefresherTimerTask(Map<String, Timestamp> cluster) {
         this.cluster = cluster;
     }
 
