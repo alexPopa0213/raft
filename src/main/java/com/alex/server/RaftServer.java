@@ -154,38 +154,64 @@ public class RaftServer implements Identifiable {
         preventElections();
         handleElections();
         notifyReplication();
-        enableRestEntriesEndpoint();
+        enableRestEndpoints();
         addShutdownHook();
     }
 
-    private void enableRestEntriesEndpoint() {
+    private void enableRestEndpoints() {
         HttpServer server;
         try {
             server = HttpServer.create(new InetSocketAddress(rest_port), 0);
-            server.createContext("/api/entries", (httpHandler -> {
-
-                if (httpHandler.getRequestMethod().equals("GET")) {
-                    List<LogEntry> entries;
-                    synchronized (LOCK) {
-                        entries = new ArrayList<>(log);
-                    }
-                    httpHandler.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
-                    httpHandler.getResponseHeaders().add(CONTENT_TYPE, "application/json");
-                    httpHandler.sendResponseHeaders(200, 0);
-                    OutputStream output = httpHandler.getResponseBody();
-                    output.write(OBJECT_MAPPER.writeValueAsBytes(entries));
-                    output.flush();
-                } else {
-                    httpHandler.sendResponseHeaders(405, -1);
-                }
-                httpHandler.close();
-            }));
+            addGetEntriesEndpoint(server);
+            addGetServerStateEndpoint(server);
             // todo: check this null
             server.setExecutor(null); // creates a default executor
             server.start();
         } catch (IOException e) {
-            LOGGER.warn("Error enabling monitoring REST endpoint");
+            LOGGER.warn("Error enabling REST endpoints");
         }
+    }
+
+    private void addGetServerStateEndpoint(HttpServer server) {
+        server.createContext("/api/state", (httpHandler -> {
+
+            if (httpHandler.getRequestMethod().equals("GET")) {
+                String serverState;
+                synchronized (LOCK) {
+                    serverState = state.toString();
+                }
+                httpHandler.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+                httpHandler.getResponseHeaders().add(CONTENT_TYPE, "application/json");
+                httpHandler.sendResponseHeaders(200, 0);
+                OutputStream output = httpHandler.getResponseBody();
+                output.write(OBJECT_MAPPER.writeValueAsBytes(serverState));
+                output.flush();
+            } else {
+                httpHandler.sendResponseHeaders(405, -1);
+            }
+            httpHandler.close();
+        }));
+    }
+
+    private void addGetEntriesEndpoint(HttpServer server) {
+        server.createContext("/api/entries", (httpHandler -> {
+
+            if (httpHandler.getRequestMethod().equals("GET")) {
+                List<LogEntry> entries;
+                synchronized (LOCK) {
+                    entries = new ArrayList<>(log);
+                }
+                httpHandler.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+                httpHandler.getResponseHeaders().add(CONTENT_TYPE, "application/json");
+                httpHandler.sendResponseHeaders(200, 0);
+                OutputStream output = httpHandler.getResponseBody();
+                output.write(OBJECT_MAPPER.writeValueAsBytes(entries));
+                output.flush();
+            } else {
+                httpHandler.sendResponseHeaders(405, -1);
+            }
+            httpHandler.close();
+        }));
     }
 
     private void enableHeartbeat() {
