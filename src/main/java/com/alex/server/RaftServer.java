@@ -6,10 +6,8 @@ import com.alex.raft.client.ClientRequest;
 import com.alex.server.heartbeat.udp.HeartbeatClusterRefresherTimerTask;
 import com.alex.server.heartbeat.udp.HeartbeatListenerTimerTask;
 import com.alex.server.heartbeat.udp.HeartbeatPublisherTimerTask;
-import com.alex.server.model.Identifiable;
 import com.alex.server.model.LogEntry;
-import com.alex.server.model.LogEntrySerializer;
-import com.alex.server.model.ServerState;
+import com.alex.server.model.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ProtocolStringList;
 import com.sun.net.httpserver.HttpServer;
@@ -101,13 +99,13 @@ public class RaftServer implements Identifiable {
 
     private final Object LOCK = new Object();
 
-    public RaftServer(int port, int rest_port, String id, List<LogEntry> precondition) {
+    public RaftServer(int port, int rest_port, String id, List<LogEntry> precondition, ElectionTimeoutProperties electionTimeoutProperties) {
         this.port = port;
         this.rest_port = rest_port;
         this.id = id;
         initPersistentState(precondition);
         state = FOLLOWER;
-        electionTimeOut = generateRandomElectionTimeout();
+        electionTimeOut = generateRandomElectionTimeout(electionTimeoutProperties);
         leaderHeartbeatTimeout = electionTimeOut / LEADER_HEARTBEAT_SPLIT;
         address = getAddress() + ':' + port;
     }
@@ -121,8 +119,10 @@ public class RaftServer implements Identifiable {
         return "localhost";
     }
 
-    private int generateRandomElectionTimeout() {
-        return new Random().nextInt(ELECTION_TIMER_UPPER_BOUND - ELECTION_TIMER_LOWER_BOUND) + ELECTION_TIMER_LOWER_BOUND;
+    private int generateRandomElectionTimeout(ElectionTimeoutProperties electionTimeoutProperties) {
+        return new Random().nextInt(
+                electionTimeoutProperties.getElectionTimeoutUpperBound() - electionTimeoutProperties.getElectionTimeoutLowerBound())
+                + electionTimeoutProperties.getElectionTimeoutLowerBound();
     }
 
     private void initPersistentState(List<LogEntry> precondition) {
