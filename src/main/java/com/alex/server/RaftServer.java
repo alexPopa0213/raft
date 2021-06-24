@@ -36,7 +36,7 @@ import static com.alex.server.config.ApplicationProperties.*;
 import static com.alex.server.model.ServerState.*;
 import static com.alex.server.serdes.ProtoBuilderUtil.toProto;
 import static com.alex.server.util.Utils.findMissingEntries;
-import static com.alex.server.util.Utils.removeConflictingEntries;
+import static com.alex.server.util.Utils.removeConflictingAndExtraEntries;
 import static com.google.common.net.HttpHeaders.CONTENT_TYPE;
 import static java.lang.Math.min;
 import static java.lang.Math.round;
@@ -101,11 +101,11 @@ public class RaftServer implements Identifiable {
 
     private final Object LOCK = new Object();
 
-    public RaftServer(int port, int rest_port, String id) {
+    public RaftServer(int port, int rest_port, String id, List<LogEntry> precondition) {
         this.port = port;
         this.rest_port = rest_port;
         this.id = id;
-        initPersistentState();
+        initPersistentState(precondition);
         state = FOLLOWER;
         electionTimeOut = generateRandomElectionTimeout();
         leaderHeartbeatTimeout = electionTimeOut / LEADER_HEARTBEAT_SPLIT;
@@ -125,7 +125,7 @@ public class RaftServer implements Identifiable {
         return new Random().nextInt(ELECTION_TIMER_UPPER_BOUND - ELECTION_TIMER_LOWER_BOUND) + ELECTION_TIMER_LOWER_BOUND;
     }
 
-    private void initPersistentState() {
+    private void initPersistentState(List<LogEntry> precondition) {
         //todo: wrap persistent state inside an object
         String dbName = DB_NAME_PREFIX + id;
         db = DBMaker.fileDB(dbName).checksumHeaderBypass().closeOnJvmShutdown().make();
@@ -133,6 +133,7 @@ public class RaftServer implements Identifiable {
         if (log.isEmpty()) {
             //so actual log will start at index = 1
             log.add(new LogEntry(0L, VOID_VALUE, 0));
+            log.addAll(precondition);
         }
         votedFor = db.atomicString(id + VOTED_FOR_SUFFIX).createOrOpen();
         currentTerm = db.atomicLong(id + CURRENT_TERM_SUFFIX).createOrOpen();
@@ -164,12 +165,28 @@ public class RaftServer implements Identifiable {
             server = HttpServer.create(new InetSocketAddress(rest_port), 0);
             addGetEntriesEndpoint(server);
             addGetServerStateEndpoint(server);
-            // todo: check this null
-            server.setExecutor(null); // creates a default executor
+            addGetElectionTimeoutEndpoint(server);
+            server.setExecutor(executorService);
             server.start();
         } catch (IOException e) {
             LOGGER.warn("Error enabling REST endpoints");
         }
+    }
+
+    private void addGetElectionTimeoutEndpoint(HttpServer server) {
+        server.createContext("/api/timeout", (httpHandler -> {
+            if (httpHandler.getRequestMethod().equals("GET")) {
+                httpHandler.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+                httpHandler.getResponseHeaders().add(CONTENT_TYPE, "application/json");
+                httpHandler.sendResponseHeaders(200, 0);
+                OutputStream output = httpHandler.getResponseBody();
+                output.write(OBJECT_MAPPER.writeValueAsBytes(electionTimeOut));
+                output.flush();
+            } else {
+                httpHandler.sendResponseHeaders(405, -1);
+            }
+            httpHandler.close();
+        }));
     }
 
     private void addGetServerStateEndpoint(HttpServer server) {
@@ -568,7 +585,7 @@ public class RaftServer implements Identifiable {
                     builder.setSuccess(false);
                     LOGGER.debug("Denied appendEntries RPC, prevLogIndex is {} and my lastLogIndex {}", prevLogIndex, lastLogIndex);
                 } else {
-                    log = removeConflictingEntries(log, request.getEntriesList());
+                    log = removeConflictingAndExtraEntries(log, request.getEntriesList(), request.getPrevLogIndex());
                     log.addAll(findMissingEntries(log, request.getEntriesList()));
                     if (request.getLeaderCommitIndex() > commitIndex) {
                         commitIndex = min(request.getLeaderCommitIndex(), log.get(lastLogIndex).getIndex());
@@ -581,7 +598,6 @@ public class RaftServer implements Identifiable {
                 leaderId = request.getLeaderId();
                 LOGGER.debug("Received appendEntries RPC from {}. Current state is: {}", request.getLeaderId(), state.toString());
             }
-            LOGGER.debug("Log is now: {}", log);
             builder.setTerm(myTerm);
             responseObserver.onNext(builder.build());
             responseObserver.onCompleted();
@@ -606,6 +622,7 @@ public class RaftServer implements Identifiable {
                         votedFor.set(request.getCandidateId());
                         leaderAlreadyElected.set(true);
                         LOGGER.debug("Vote granted to {}", request.getCandidateId());
+                        state = FOLLOWER;
                     } else {
                         builder.setVoteGranted(false);
                         LOGGER.debug("Vote NOT granted to {} because it's log was not up-to-date.", request.getCandidateId());
