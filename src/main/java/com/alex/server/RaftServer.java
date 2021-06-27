@@ -337,12 +337,10 @@ public class RaftServer implements Identifiable {
                     .setPrevLogTerm(prevLogTerm)
                     .addAllEntries(toProto(entries))
                     .build();
-        }
-        try {
-            managedChannel = managedChannelMap.computeIfAbsent(server, this::buildChannel);
-            blockingStub = stubs.computeIfAbsent(server, integer -> newBlockingStub(managedChannel));
-            AppendEntriesReply appendEntriesReply = blockingStub.appendEntries(appendEntriesRequest);
-            synchronized (LOCK) {
+            try {
+                managedChannel = managedChannelMap.computeIfAbsent(server, this::buildChannel);
+                blockingStub = stubs.computeIfAbsent(server, integer -> newBlockingStub(managedChannel));
+                AppendEntriesReply appendEntriesReply = blockingStub.appendEntries(appendEntriesRequest);
                 if (!appendEntriesReply.getSuccess()) {
                     LOGGER.debug("Heartbeat to server {} failed.", server);
                     checkAndUpdateTerm(appendEntriesReply.getTerm());
@@ -351,16 +349,16 @@ public class RaftServer implements Identifiable {
                         nextIndex.put(server, idx);
                     }
                 } else {
-                    int lastLogIndex = log.size() - 1;
-                    nextIndex.put(server, lastLogIndex + 1);
-                    matchIndex.put(server, lastLogIndex);
+                    int lastLogIndexx = log.size() - 1;
+                    nextIndex.put(server, lastLogIndexx + 1);
+                    matchIndex.put(server, lastLogIndexx);
                 }
+            } catch (StatusRuntimeException sre) {
+                LOGGER.warn("RPC failed: {}, {}", sre.getStatus(), sre.getMessage());
+                removeServerIfUnavailable(sre.getStatus(), server);
+            } catch (Exception e) {
+                LOGGER.error("ERROR calling appendEntries RPC entries", e);
             }
-        } catch (StatusRuntimeException sre) {
-            LOGGER.warn("RPC failed: {}, {}", sre.getStatus(), sre.getMessage());
-            removeServerIfUnavailable(sre.getStatus(), server);
-        } catch (Exception e) {
-            LOGGER.error("ERROR calling appendEntries RPC entries", e);
         }
     }
 
@@ -380,12 +378,13 @@ public class RaftServer implements Identifiable {
     }
 
     private void startElection() {
-        LOGGER.debug("Started election.");
         synchronized (LOCK) {
-            state = CANDIDATE;
-            currentTerm.set(currentTerm.get() + 1);
-            votedFor.set(null);
-            receivedVotes = 0;
+            if (!leaderAlreadyElected.get()) {
+                state = CANDIDATE;
+                currentTerm.set(currentTerm.get() + 1);
+                votedFor.set(null);
+                receivedVotes = 0;
+            }
         }
 
         for (final String address : cluster.keySet()) {
@@ -395,7 +394,7 @@ public class RaftServer implements Identifiable {
 
     private void sendRequestVoteRPC(String address) {
         synchronized (LOCK) {
-            if (state != CANDIDATE) {
+            if (state != CANDIDATE || leaderAlreadyElected.get()) {
                 return;
             }
         }
@@ -436,7 +435,7 @@ public class RaftServer implements Identifiable {
             long lastLogTerm = log.get(lastLogIndex).getTerm();
             requestVoteRequest = RequestVoteRequest.newBuilder()
                     .setTerm(currentTerm.get())
-                    .setCandidateId(id)
+                    .setCandidateIp(this.address)
                     .setLastLogIndex(lastLogIndex)
                     .setLastLogTerm(lastLogTerm)
                     .build();
@@ -469,15 +468,20 @@ public class RaftServer implements Identifiable {
                 LOGGER.debug("Updated term is: {}", currentTerm.get());
                 state = FOLLOWER;
                 votedFor.set(null);
+                leaderAlreadyElected.set(true);
             }
         }
     }
 
     private void removeServerIfUnavailable(Status status, String address) {
+        LOGGER.debug("RPC failed and server {} will be removed from cluster.", address);
         if (status.getCode().equals(Status.Code.UNAVAILABLE)) { //maybe retry first?
             cluster.remove(address);
-            managedChannelMap.remove(address);
-            stubs.remove(address);
+            if (managedChannelMap.containsKey(address)) {
+                managedChannelMap.get(address).shutdownNow();
+                managedChannelMap.remove(address);
+                stubs.remove(address);
+            }
         }
     }
 
@@ -535,11 +539,15 @@ public class RaftServer implements Identifiable {
                 shouldRedirect = state != LEADER && leaderId != null;
             }
             if (shouldRedirect) {
+                final ManagedChannel managedChannel;
+                final RaftServiceGrpc.RaftServiceBlockingStub blockingStub;
                 LOGGER.debug("Redirecting request to leader {}", leaderId);
                 ClientRequest clientRequest = ClientRequest.newBuilder()
                         .addAllCommands(commandsList)
                         .build();
-                ClientReply clientReply = stubs.get(leaderId).sendCommands(clientRequest);
+                managedChannel = managedChannelMap.computeIfAbsent(leaderId, RaftServer.this::buildChannel);
+                blockingStub = stubs.computeIfAbsent(leaderId, integer -> newBlockingStub(managedChannel));
+                ClientReply clientReply = blockingStub.sendCommands(clientRequest);
                 success = clientReply.getSuccess();
             } else {
                 if (cluster.size() + 1 >= minimumClusterSize) {
@@ -573,7 +581,7 @@ public class RaftServer implements Identifiable {
         public void appendEntries(AppendEntriesRequest request, StreamObserver<AppendEntriesReply> responseObserver) {
             AppendEntriesReply.Builder builder = AppendEntriesReply.newBuilder();
             final long myTerm;
-            LOGGER.debug("Received append entries rpc RPC from {}. Request is: {}.", request.getLeaderId(), request.toString());
+            LOGGER.debug("Received append entries RPC from {}. Request is: {}.", request.getLeaderId(), request.toString());
             synchronized (LOCK) {
                 myTerm = currentTerm.get();
                 int prevLogIndex = request.getPrevLogIndex();
@@ -605,31 +613,37 @@ public class RaftServer implements Identifiable {
 
         @Override
         public void requestVote(RequestVoteRequest request, StreamObserver<RequestVoteReply> responseObserver) {
-            LOGGER.debug("Received RequestVoteRPC from: {}", request.getCandidateId());
+            String candidateAddress = request.getCandidateIp();
+            LOGGER.debug("Received RequestVoteRPC from: {}", candidateAddress);
             RequestVoteReply.Builder builder = RequestVoteReply.newBuilder();
-            synchronized (LOCK) {
-                long myTerm = currentTerm.get();
-                LOGGER.debug("Current term is: {} and received term is: {}", myTerm, request.getTerm());
-                builder.setTerm(myTerm);
-                int lastLogIndex = log.size() - 1;
-                long lastLogTerm = log.get(lastLogIndex).getTerm();
-                if (request.getTerm() < myTerm) {
-                    builder.setVoteGranted(false);
-                    LOGGER.debug("Vote NOT granted to {} because term was lower.", request.getCandidateId());
-                } else if (isNull(votedFor.get())) {
-                    if (request.getLastLogTerm() >= lastLogTerm && request.getLastLogIndex() >= lastLogIndex) {
-                        builder.setVoteGranted(true);
-                        votedFor.set(request.getCandidateId());
-                        leaderAlreadyElected.set(true);
-                        LOGGER.debug("Vote granted to {}", request.getCandidateId());
-                        state = FOLLOWER;
+            if (!cluster.containsKey(candidateAddress)) {
+                builder.setVoteGranted(false);
+                LOGGER.debug("Denied requestVote from {} because it is not part of the cluster.", candidateAddress);
+            } else {
+                synchronized (LOCK) {
+                    long myTerm = currentTerm.get();
+                    LOGGER.debug("Current term is: {} and received term is: {}", myTerm, request.getTerm());
+                    builder.setTerm(myTerm);
+                    int lastLogIndex = log.size() - 1;
+                    long lastLogTerm = log.get(lastLogIndex).getTerm();
+                    if (request.getTerm() < myTerm) {
+                        builder.setVoteGranted(false);
+                        LOGGER.debug("Vote NOT granted to {} because term was lower.", candidateAddress);
+                    } else if (isNull(votedFor.get())) {
+                        if (request.getLastLogTerm() >= lastLogTerm && request.getLastLogIndex() >= lastLogIndex) {
+                            builder.setVoteGranted(true);
+                            votedFor.set(candidateAddress);
+                            leaderAlreadyElected.set(true);
+                            LOGGER.debug("Vote granted to {}", candidateAddress);
+                            state = FOLLOWER;
+                        } else {
+                            builder.setVoteGranted(false);
+                            LOGGER.debug("Vote NOT granted to {} because it's log was not up-to-date.", candidateAddress);
+                        }
                     } else {
                         builder.setVoteGranted(false);
-                        LOGGER.debug("Vote NOT granted to {} because it's log was not up-to-date.", request.getCandidateId());
+                        LOGGER.debug("Vote NOT granted to {} because I already voted for {}.", candidateAddress, votedFor.get());
                     }
-                } else {
-                    builder.setVoteGranted(false);
-                    LOGGER.debug("Vote NOT granted to {} because I already voted for {}.", request.getCandidateId(), votedFor.get());
                 }
             }
             responseObserver.onNext(builder.build());

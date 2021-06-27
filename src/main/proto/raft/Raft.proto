@@ -66,7 +66,7 @@ message RequestVoteRequest {
     /*
       candidate requesting vote
         */
-    string candidateId = 2;
+    string candidateIp = 2;
     /*
       index of candidate’s last log entry
         */
